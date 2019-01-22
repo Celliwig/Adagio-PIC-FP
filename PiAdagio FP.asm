@@ -6,9 +6,10 @@
 	include "p16f874.inc"
 	include <coff.inc>
 	include	"i2c.inc"
+	include	"ir_receiver.inc"
 	include "lcd.inc"
 	include "commands.inc"
-	include "PIAdagio FP.inc"
+	include "PiAdagio FP.inc"
 
 ;	4 MHz ceramic resonator
 	__CONFIG _CP_OFF & _PWRTE_ON & _WDT_OFF & _XT_OSC & _LVP_ON
@@ -36,6 +37,14 @@
 		_mr_temp
 ; Button registers
 		_mr_button_bank: 3
+; IR receiver registers
+		_mr_ir_receiver_count_false,_mr_ir_receiver_count_true
+		_mr_ir_receiver_state,_mr_ir_receiver_error_count
+		_mr_ir_receiver_bit_index,_mr_ir_receiver_ft_divide
+		_mr_ir_receiver_address,_mr_ir_receiver_address_inverted
+		_mr_ir_receiver_command,_mr_ir_receiver_command_inverted
+		_mr_ir_receiver_command_actual,_mr_ir_receiver_command_repeat
+		_mr_ir_receiver_address_actual
 ; i2c registers
 		_mr_i2c_temp,_mr_i2c_cmd_status,_mr_i2c_cmd_size
 		_mr_i2c_buffer: RX_BUF_LEN, _mr_i2c_buffer_index
@@ -73,40 +82,50 @@ ISRVector	org	0x004
 ; Interrupt Code
 ;---------------------------------------------------------------------
 ISR
-	movwf	WREGsave		; Save WREG (any bank)
-	swapf	STATUS, W		; Get STATUS register (without affecting it)
-	banksel	STATUSsave		; Switch banks, after we have copied the STATUS register
-	movwf	STATUSsave		; Save the STATUS register
+	movwf	WREGsave			; Save WREG (any bank)
+	swapf	STATUS, W			; Get STATUS register (without affecting it)
+	banksel	STATUSsave			; Switch banks, after we have copied the STATUS register
+	movwf	STATUSsave			; Save the STATUS register
 	movf	PCLATH, W
-	movwf	PCLATHsave		; Save PCLATH
+	movwf	PCLATHsave			; Save PCLATH
 	movf	FSR, W
-	movwf	FSRsave			; Save FSR
+	movwf	FSRsave				; Save FSR
+
+	clrf	PCLATH				; Clear PCLATH register
 
 ISR_Tmr2_int
 	banksel	PIR1
 	btfss	PIR1, TMR2IF			; Is this a Timer2 interrupt
-		goto	ISR_i2c_int		; If not go to next check
+		goto	ISR_Tmr1_int		; If not go to next check
 	bcf	PIR1, TMR2IF			; Otherwise, clear the interrupt flag
 	banksel	_mr_screen_buffer_update
 	movlw	0x1
 	movwf	_mr_screen_buffer_update	; And mark the LCD for update
+	goto	ISR_exit
+
+ISR_Tmr1_int
+	banksel	PIR2
+	btfss   PIR2, CCP2IF
+		goto    ISR_i2c_int
+	call    ir_receiver_interrupt_handler
+	goto	ISR_exit
 
 ISR_i2c_int
 	banksel	PIR1
-	btfsc	PIR1,SSPIF		; Is this a SSP interrupt?
+	btfsc	PIR1,SSPIF			; Is this a SSP interrupt?
 		call	i2c_slave_ssp_handler	; Yes, service SSP interrupt. By skipping is this going to cause problems on bus collisions
 
 ISR_exit
 	banksel	FSRsave
 	movf	FSRsave, W
-	movwf	FSR			; Restore FSR
+	movwf	FSR				; Restore FSR
 	movf	PCLATHsave, W
-	movwf	PCLATH			; Restore PCLATH
+	movwf	PCLATH				; Restore PCLATH
 	swapf	STATUSsave, W
-	movwf	STATUS			; Restore STATUS
+	movwf	STATUS				; Restore STATUS
 	swapf	WREGsave, F
-	swapf	WREGsave, W		; Restore WREG
-	retfie				; Return from interrupt
+	swapf	WREGsave, W			; Restore WREG
+	retfie					; Return from interrupt
 
 ;***********************************************************************
 main
@@ -120,6 +139,8 @@ main
 
 	call	screen_timer_init			; Setup timer to refresh LCD
 	call	screen_timer_enable			; Enable refresh timer
+	call	ir_receiver_timer_init
+	call	ir_receiver_timer_enable
 
 main_loop
 	clrwdt						; Clear watchdog timer
@@ -134,9 +155,16 @@ main_loop_update_lcd
 	clrf	_mr_screen_buffer_update		; Clear LCD update flag
 
 main_loop_read_inputs
-	call	read_buttons
-	call	buttons_2_command
+	movlw	0x0f					; Select high address (includes the required offset for the add in the routine)
+	movwf	PCLATH					; For the next 'call'
+	banksel	_mr_ir_receiver_command_actual
+	movf	_mr_ir_receiver_command_actual, W	; Get IR command data
+	call	ir_receiver_bc_2_cmd_table		; Translate IR to function code
+	movwf	_mr_cmd_cur
+	clrf	PCLATH					; Clear the PCLATH
 
+	call	read_buttons				; Check buttons
+	call	buttons_2_command			; Translate button presses to function code
 
 ;***********************************************************************
 ;***********************************************************************
@@ -640,8 +668,14 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR
-	movlw	eeprom_str_bank - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	'B'
+	call	screen_write_char
+	movlw	'a'
+	call	screen_write_char
+	movlw	'n'
+	call	screen_write_char
+	movlw	'k'
+	call	screen_write_char
 	movlw	'1'
 	call	screen_write_char
 	incf	FSR, F
@@ -651,8 +685,14 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line1 + 10
 	movwf	FSR
-	movlw	eeprom_str_bank - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	'B'
+	call	screen_write_char
+	movlw	'a'
+	call	screen_write_char
+	movlw	'n'
+	call	screen_write_char
+	movlw	'k'
+	call	screen_write_char
 	movlw	'2'
 	call	screen_write_char
 	incf	FSR, F
@@ -662,8 +702,14 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR
-	movlw	eeprom_str_bank - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	'B'
+	call	screen_write_char
+	movlw	'a'
+	call	screen_write_char
+	movlw	'n'
+	call	screen_write_char
+	movlw	'k'
+	call	screen_write_char
 	movlw	'3'
 	call	screen_write_char
 	incf	FSR, F
@@ -673,8 +719,20 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR
-	movlw	eeprom_str_command - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	'C'
+	call	screen_write_char
+	movlw	'o'
+	call	screen_write_char
+	movlw	'm'
+	call	screen_write_char
+	movlw	'm'
+	call	screen_write_char
+	movlw	'a'
+	call	screen_write_char
+	movlw	'n'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
 	incf	FSR, F
 	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, W
@@ -807,11 +865,131 @@ mode_testfp_test_lcd_line4_loop2
 mode_testfp_test_ir
 	call	screen_clear
 
-	movlw	_mr_screen_buffer_line2 + 3
+	movlw	_mr_screen_buffer_line1
 	movwf	FSR
-	movlw	eeprom_str_notavail - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	'R'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	'_'
+	call	screen_write_char
+	movlw	'A'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	'r'
+	call	screen_write_char
+	movlw	':'
+	call	screen_write_char
+	banksel	_mr_ir_receiver_address
+	movf	_mr_ir_receiver_address, W
+	call    screen_write_byte_as_hex
 
+	movlw	_mr_screen_buffer_line1 + 11
+	movwf	FSR
+	movlw	'R'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	'_'
+	call	screen_write_char
+	movlw	'C'
+	call	screen_write_char
+	movlw	'm'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	':'
+	call	screen_write_char
+	banksel	_mr_ir_receiver_command
+	movf	_mr_ir_receiver_command, W
+	call    screen_write_byte_as_hex
+
+	movlw	_mr_screen_buffer_line2
+	movwf	FSR
+	movlw	'R'
+	call	screen_write_char
+	movlw	'c'
+	call	screen_write_char
+	movlw	'v'
+	call	screen_write_char
+	movlw	'r'
+	call	screen_write_char
+	movlw	' '
+	call	screen_write_char
+	movlw	'A'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	'r'
+	call	screen_write_char
+	movlw	':'
+	call	screen_write_char
+	banksel	_mr_ir_receiver_address_actual
+	movf	_mr_ir_receiver_address_actual, W
+	call    screen_write_byte_as_hex
+
+	movlw	_mr_screen_buffer_line3
+	movwf	FSR
+	movlw	'E'
+	call	screen_write_char
+	movlw	'r'
+	call	screen_write_char
+	movlw	'r'
+	call	screen_write_char
+	movlw	'o'
+	call	screen_write_char
+	movlw	'r'
+	call	screen_write_char
+	movlw	' '
+	call	screen_write_char
+	movlw	'C'
+	call	screen_write_char
+	movlw	'o'
+	call	screen_write_char
+	movlw	'u'
+	call	screen_write_char
+	movlw	'n'
+	call	screen_write_char
+	movlw	't'
+	call	screen_write_char
+	movlw	':'
+	call	screen_write_char
+	banksel	_mr_ir_receiver_error_count
+	movf	_mr_ir_receiver_error_count, W
+	call    screen_write_byte_as_hex
+
+	movlw	_mr_screen_buffer_line4
+	movwf	FSR
+	movlw	'C'
+	call	screen_write_char
+	movlw	'm'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	':'
+	call	screen_write_char
+	banksel	_mr_ir_receiver_command_actual
+	movf	_mr_ir_receiver_command_actual, W
+	call    screen_write_byte_as_hex
+
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, F
+	btfss	STATUS, Z
+		goto	mode_testfp_test_ir_exit
+	movf	_mr_cmd_prev, W
+	sublw	CMD_EJECT					; If the eject button was previously depressed
+	btfss	STATUS, Z
+		goto	mode_testfp_test_ir_exit
+	movf	_mr_ir_receiver_address, W			; Update the IR receiver address, with previously received value
+	movwf	_mr_ir_receiver_address_actual
+	call	ir_receiver_save_receiver_addr			; Save address back to the EEPROM
+
+mode_testfp_test_ir_exit
 	return
 
 ;***********************************************************************
@@ -822,8 +1000,32 @@ mode_testfp_test_i2c
 
 	movlw	_mr_screen_buffer_line2 + 3
 	movwf	FSR
-	movlw	eeprom_str_notavail - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	'N'
+	call	screen_write_char
+	movlw	'o'
+	call	screen_write_char
+	movlw	't'
+	call	screen_write_char
+	movlw	' '
+	call	screen_write_char
+	movlw	'A'
+	call	screen_write_char
+	movlw	'v'
+	call	screen_write_char
+	movlw	'a'
+	call	screen_write_char
+	movlw	'i'
+	call	screen_write_char
+	movlw	'l'
+	call	screen_write_char
+	movlw	'a'
+	call	screen_write_char
+	movlw	'b'
+	call	screen_write_char
+	movlw	'l'
+	call	screen_write_char
+	movlw	'e'
+	call	screen_write_char
 
 	return
 
@@ -992,9 +1194,6 @@ init_mem
 
 	clrf	_mr_test_select					; Test mode, selected test
 
-	clrf	_mr_oldxtris					; Clear the TRIS save registers
-	clrf	_mr_oldytris
-
 	banksel	_mr_screen_buffer_update
 	clrf	_mr_screen_buffer_update			; Clear screen buffer related registers
 	clrf	_mr_screen_buffer_loop
@@ -1004,7 +1203,21 @@ init_mem
 	clrf	_mr_lcd_delayloop1
 	clrf	_mr_lcd_delayloop2
 
+	clrf	_mr_oldxtris					; Clear the TRIS save registers
+	clrf	_mr_oldytris
+
 	call	screen_clear					; Clear screen buffer
+
+	banksel	EEADR
+	movlw	eeprom_ir_addr - 0x2100				; Get the IR receiver address
+	movwf	EEADR
+	banksel	EECON1
+	bcf	EECON1, EEPGD					; Select EEPROM memory
+	bsf	EECON1, RD					; Start read operation
+	banksel	EEDATA
+	movf	EEDATA, W
+	banksel	_mr_ir_receiver_address_actual
+	movwf	_mr_ir_receiver_address_actual
 
 	return
 
@@ -1072,13 +1285,13 @@ waste_time_l1
 	goto    waste_time_l1
 	return
 
-
 	include "buttons.asm"
 	include "i2c_master.asm"
 	include "i2c_slave.asm"
 	include "lcd.asm"
 	include	"screen.asm"
 	include "commands.asm"
+	include	"ir_receiver.asm"			; This has a table at a fixed location, so needs to be loaded last
 
 ;***********************************************************************
 ;***********************************************************************
@@ -1086,18 +1299,16 @@ waste_time_l1
 ;***********************************************************************
 ;***********************************************************************
 .eedata	org	0x2100
+eeprom_ir_addr		de	0x42
 eeprom_str_title1	de	"PiAdagio Sound\0"
 eeprom_str_title2	de	"Server\0"
 eeprom_str_poweroff	de	"Power Off\0"
 eeprom_str_reset	de	"Hard Reset\0"
 eeprom_str_shutdown	de	"Shutdown\0"
-eeprom_str_notavail	de	"Not Available\0"
-eeprom_str_bank		de	"Bank\0"
-eeprom_str_command	de	"Command\0"
 
 eeprom_str_tmode0	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,0
-eeprom_str_tmode1	TESTFP_TEST_LIST     TESTFP_OBJ_EEPROM,1
-eeprom_str_tmode2	TESTFP_TEST_LIST     TESTFP_OBJ_EEPROM,2
-eeprom_str_tmode3	TESTFP_TEST_LIST     TESTFP_OBJ_EEPROM,3
+eeprom_str_tmode1	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,1
+eeprom_str_tmode2	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,2
+eeprom_str_tmode3	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,3
 
         END

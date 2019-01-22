@@ -3,7 +3,8 @@
 ;***********************************************************************
 buttons_2_command
 	banksel	_mr_button_bank
-	movlw	CMD_NONE					; Clear command value
+	movf	_mr_cmd_cur, W					; Load current command, as this module follows the
+								; IR receiver, which will clear this register otherwise
 
 	movf	_mr_button_bank, F				; Test if this bank has depressed switches
 	btfsc	STATUS, Z
