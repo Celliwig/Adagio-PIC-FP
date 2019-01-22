@@ -1,0 +1,228 @@
+
+# This file was written by gpsim.
+
+# You can use this file for example like this:
+#     gpsim -s mycode.cod -c netlist.stc
+
+# If you want to add commands, you can create another .stc file
+# and load this file from it. Something like this:
+# ----------- myproject.stc ---------------
+# load s mycode.cod
+# frequency 12000000
+# load c netlist.stc
+# -----------------------------------------
+# You can then just load this new file:
+#     gpsim -c myproject.stc
+# and use netlist.stc whenever you save from the breadboard.
+#
+
+
+# Processor position:
+module library libgpsim_extras
+module library libgpsim_modules
+
+
+# Modules:
+p16f874.BreakOnReset = true
+p16f874.SafeMode = true
+p16f874.UnknownMode = true
+p16f874.WarnMode = true
+p16f874.tmr1_freq = 32768
+p16f874.xpos = 108
+p16f874.ypos = 48
+
+frequency 4000000
+
+module load lcd_20x4 lcd1
+lcd1.xpos = 744
+lcd1.ypos = 468
+
+module load led online
+online.ActiveState = high
+online.color = red
+online.xpos = 36
+online.ypos = 48
+
+module load switch Pwr
+Pwr.Rclosed = 10
+Pwr.Ropen = 1e+08
+Pwr.state = open
+Pwr.xpos = 24
+Pwr.ypos = 432
+
+module load switch Eject
+Eject.Rclosed = 10
+Eject.Ropen = 1e+08
+Eject.state = open
+Eject.xpos = 216
+Eject.ypos = 432
+
+module load pullup p_d0
+p_d0.capacitance = 0
+p_d0.resistance = 10000
+p_d0.voltage = 5
+p_d0.xpos = 324
+p_d0.ypos = 24
+
+module load pullup p_d1
+p_d1.capacitance = 0
+p_d1.resistance = 10000
+p_d1.voltage = 5
+p_d1.xpos = 384
+p_d1.ypos = 24
+
+module load pullup p_d2
+p_d2.capacitance = 0
+p_d2.resistance = 10000
+p_d2.voltage = 5
+p_d2.xpos = 444
+p_d2.ypos = 24
+
+module load pullup p_d3
+p_d3.capacitance = 0
+p_d3.resistance = 10000
+p_d3.voltage = 5
+p_d3.xpos = 504
+p_d3.ypos = 24
+
+module load pullup p_d4
+p_d4.capacitance = 0
+p_d4.resistance = 10000
+p_d4.voltage = 5
+p_d4.xpos = 324
+p_d4.ypos = 72
+
+module load pullup p_d5
+p_d5.capacitance = 0
+p_d5.resistance = 10000
+p_d5.voltage = 5
+p_d5.xpos = 384
+p_d5.ypos = 72
+
+module load pullup p_d6
+p_d6.capacitance = 0
+p_d6.resistance = 10000
+p_d6.voltage = 5
+p_d6.xpos = 444
+p_d6.ypos = 72
+
+module load pullup p_d7
+p_d7.capacitance = 0
+p_d7.resistance = 10000
+p_d7.voltage = 5
+p_d7.xpos = 504
+p_d7.ypos = 72
+
+module load i2cmaster Master
+Master.xpos = 132
+Master.ypos = 336
+
+module load led standby
+standby.ActiveState = high
+standby.color = red
+standby.xpos = 36
+standby.ypos = 108
+
+module load switch Play
+Play.Rclosed = 10
+Play.Ropen = 1e+08
+Play.state = open
+Play.xpos = 120
+Play.ypos = 432
+
+module load switch Left
+Left.Rclosed = 10
+Left.Ropen = 1e+08
+Left.state = open
+Left.xpos = 24
+Left.ypos = 600
+
+module load switch Select
+Select.Rclosed = 10
+Select.Ropen = 1e+08
+Select.state = open
+Select.xpos = 108
+Select.ypos = 600
+
+module load switch Right
+Right.Rclosed = 10
+Right.Ropen = 1e+08
+Right.state = open
+Right.xpos = 204
+Right.ypos = 600
+
+module load switch Up
+Up.Rclosed = 10
+Up.Ropen = 1e+08
+Up.state = open
+Up.xpos = 108
+Up.ypos = 528
+
+module load switch Down
+Down.Rclosed = 10
+Down.Ropen = 1e+08
+Down.state = open
+Down.xpos = 108
+Down.ypos = 672
+
+
+# Connections:
+node nE
+attach nE p16f874.portc7 lcd1.E
+
+node nRW
+attach nRW p16f874.portc6 lcd1.RW
+
+node nDC
+attach nDC p16f874.portc5 lcd1.DC
+
+node n_d0
+attach n_d0 p16f874.portd0 lcd1.d0 Pwr.A p_d0.pin Up.A
+
+node n_d1
+attach n_d1 p16f874.portd1 lcd1.d1 p_d1.pin Play.A Right.A
+
+node n_d2
+attach n_d2 p16f874.portd2 lcd1.d2 p_d2.pin Left.A
+
+node n_d3
+attach n_d3 p16f874.portd3 lcd1.d3 p_d3.pin
+
+node n_d4
+attach n_d4 p16f874.portd4 lcd1.d4 p_d4.pin
+
+node n_d5
+attach n_d5 p16f874.portd5 lcd1.d5 p_d5.pin Down.A
+
+node n_d6
+attach n_d6 p16f874.portd6 lcd1.d6 p_d6.pin Select.A
+
+node n_d7
+attach n_d7 p16f874.portd7 lcd1.d7 Eject.A p_d7.pin
+
+node n_c2
+attach n_c2 p16f874.portc2 Pwr.B Play.B Left.B Select.B Down.B
+
+node n_b1
+attach n_b1 p16f874.portb1 Eject.B
+
+node n_b2
+attach n_b2 p16f874.portb2 Right.B Up.B
+
+node n_scl
+attach n_scl Master.scl p16f874.portc3
+
+node n_sda
+attach n_sda Master.sda p16f874.portc4
+
+node n_c1
+attach n_c1 p16f874.portc1 online.in
+
+node n_standby
+attach n_standby standby.in p16f874.porte2
+
+node n_b4
+attach n_b4 p16f874.portb4
+
+
+# End.
