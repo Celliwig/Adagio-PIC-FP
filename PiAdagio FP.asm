@@ -7,6 +7,7 @@
 	include <coff.inc>
 	include	"i2c.inc"
 	include "i2c_master.inc"
+	include	"i2c_slave.inc"
 	include	"ir_receiver.inc"
 	include "lcd.inc"
 	include "commands.inc"
@@ -18,8 +19,7 @@
 	ERRORLEVEL -302 ;remove message about using proper bank
 
 	#define NODE_ADDR		0x22		; I2C address of this node (address 17, it's stored in it's shifted state!)
-	#define RX_BUF_LEN		22		; Length of receive buffer (cmd str + cmd pos + max str len (20))
-	#define I2C_CHAR_CLEAR		0x00		; value to load into array after transmit
+	#define RX_BUF_LEN		42		; Length of receive buffer (cmd str + cmd pos + 2 lines)
 	#define	LCD_LINE_LENGTH		20		; Line length of lcd
 
 	#define	START_OF_RAM_1	0x20
@@ -50,8 +50,10 @@
 		_mr_ir_receiver_command_actual,_mr_ir_receiver_command_repeat
 		_mr_ir_receiver_address_lsb_actual,_mr_ir_receiver_address_msb_actual
 ; i2c registers
-		_mr_i2c_temp,_mr_i2c_cmd_status,_mr_i2c_cmd_size
+		_mr_i2c_state,_mr_i2c_temp
+		_mr_i2c_cmd_status,_mr_i2c_cmd_size
 		_mr_i2c_buffer: RX_BUF_LEN, _mr_i2c_buffer_index
+		_mr_i2c_rx_count,_mr_i2c_tx_count,_mr_i2c_err_count
 	endc
 
 	cblock	START_OF_RAM_2
@@ -97,19 +99,17 @@ ISR
 
 	clrf	PCLATH				; Clear PCLATH register
 
-ISR_Tmr2_int
+ISR_i2c_int
 	banksel	PIR1
-	btfss	PIR1, TMR2IF			; Is this a Timer2 interrupt
-		goto	ISR_Tmr1_int		; If not go to next check
-	bcf	PIR1, TMR2IF			; Otherwise, clear the interrupt flag
-	banksel	_mr_screen_buffer_update
-	bsf	_mr_screen_buffer_update, 0x0	; And mark the LCD for update
+	btfss	PIR1, SSPIF			; Is this a SSP interrupt?
+		goto	ISR_Tmr1_int
+	call	i2c_slave_ssp_handler		; Yes, service SSP interrupt. By skipping is this going to cause problems on bus collisions
 	goto	ISR_exit
 
 ISR_Tmr1_int
 	banksel	PIR2
 	btfss   PIR2, CCP2IF
-		goto    ISR_i2c_int
+		goto    ISR_Tmr2_int
 	btfss	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_WAIT
 		call	set_power_led_toggle	; Indicate IR reception
 
@@ -119,10 +119,14 @@ ISR_Tmr1_int
 	clrf	PCLATH				; Clear high address for 'goto'
 	goto	ISR_exit
 
-ISR_i2c_int
+ISR_Tmr2_int
 	banksel	PIR1
-	btfsc	PIR1,SSPIF			; Is this a SSP interrupt?
-		call	i2c_slave_ssp_handler	; Yes, service SSP interrupt. By skipping is this going to cause problems on bus collisions
+	btfss	PIR1, TMR2IF			; Is this a Timer2 interrupt
+		goto	ISR_Ext_int		; If not go to next check
+	bcf	PIR1, TMR2IF			; Otherwise, clear the interrupt flag
+	banksel	_mr_screen_buffer_update
+	bsf	_mr_screen_buffer_update, 0x0	; And mark the LCD for update
+	goto	ISR_exit
 
 ISR_Ext_int
 	btfss	INTCON, INTF
@@ -168,7 +172,10 @@ main_loop_update_lcd
 		goto	main_loop_read_inputs
 	btfsc	_mr_screen_buffer_update, 0x1		; Is the screen update disabled
 		goto	main_loop_read_inputs
-	call	screen_write_2_lcd			; Write screen buffer to LCD
+	movlw	(LCD_BASE_ADDR>>8)			; Select high address
+	movwf	PCLATH					; For the next 'call'
+	call	LCD_UPDATE_FROM_SCREEN_BUFFER		; Write screen buffer to LCD
+	clrf	PCLATH
 	banksel	_mr_screen_buffer_update
 	bcf	_mr_screen_buffer_update, 0x0		; Clear screen update flag
 
@@ -437,11 +444,12 @@ mode_poweroff_set
 	return
 
 mode_poweroff_init
-	call	i2c_master_init
-	call	lcd_backlight_contrast_settings_save_then_clear
-	call	screen_clear				; Clear screen buffer
-	call	set_online_led_off
 	call	set_psu_off
+	call	set_online_led_off
+	call	screen_clear					; Clear screen buffer
+	call	i2c_master_init					; Need the PSU off to become master
+;	call	lcd_backlight_contrast_settings_save_then_clear
+	call	lcd_backlight_contrast_settings_clear
 
 	banksel	_mr_mode_prev
 	movlw	MODE_POWEROFF
@@ -458,7 +466,7 @@ mode_poweron_set
 	return
 
 mode_poweron_init
-	call	lcd_backlight_contrast_settings_restore
+	call	lcd_backlight_contrast_settings_restore		; Restore before we become a slave
 	call	set_online_led_off
 	call	set_mpu_as_i2c_slave				; Reset SSP as i2c slave and enable interrupts
 	call	set_psu_on
@@ -1165,12 +1173,169 @@ mode_testfp_test_ir_exit
 mode_testfp_test_pwr_cntrls
 	call	screen_clear
 
-	movlw	_mr_screen_buffer_line2 + 4
+; Power
+;*******************
+	movlw	_mr_screen_buffer_line1 + 2
 	movwf	FSR
-
-	movlw	str_tests_not_avail - STR_TESTS_BASE_ADDR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x6
+		goto	mode_testfp_test_pwr_cntrls_power
+	btfsc	_mr_test_select, 0x4
+		goto	mode_testfp_test_pwr_cntrls_power
+	btfss	_mr_test_select, 0x5
+		call	screen_write_char
+mode_testfp_test_pwr_cntrls_power
+	movlw	_mr_screen_buffer_line1 + 4
+	movwf	FSR
+	movlw	str_tests_power - STR_TESTS_BASE_ADDR
 	call	screen_write_flash_2_buffer_tests_str
 
+	movlw	_mr_screen_buffer_line1 + 16
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x6
+		goto	mode_testfp_test_pwr_cntrls_power_value
+	btfsc	_mr_test_select, 0x4
+		goto	mode_testfp_test_pwr_cntrls_power_value
+	btfss	_mr_test_select, 0x5
+		call	screen_write_char
+mode_testfp_test_pwr_cntrls_power_value
+	movlw	_mr_screen_buffer_line1 + 17
+	movwf	FSR
+	clrw
+	banksel	PORTC
+	btfsc	PORTC, 0x0
+		movlw	0x1
+	call	screen_write_byte_as_hex
+
+; Reset
+;*******************
+	movlw	_mr_screen_buffer_line2 + 2
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x6
+		goto	mode_testfp_test_pwr_cntrls_reset
+	btfss	_mr_test_select, 0x4
+		goto	mode_testfp_test_pwr_cntrls_reset
+	btfss	_mr_test_select, 0x5
+		call	screen_write_char
+mode_testfp_test_pwr_cntrls_reset
+	movlw	_mr_screen_buffer_line2 + 4
+	movwf	FSR
+	movlw	str_tests_reset - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	movlw	_mr_screen_buffer_line2 + 16
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x6
+		goto	mode_testfp_test_pwr_cntrls_reset_value
+	btfss	_mr_test_select, 0x4
+		goto	mode_testfp_test_pwr_cntrls_reset_value
+	btfss	_mr_test_select, 0x5
+		call	screen_write_char
+mode_testfp_test_pwr_cntrls_reset_value
+	movlw	_mr_screen_buffer_line2 + 17
+	movwf	FSR
+	clrw
+	banksel	TRISA
+	btfss	TRISA, 0x5
+		movlw	0x1
+	call	screen_write_byte_as_hex
+
+; Shutdown
+;*******************
+	movlw	_mr_screen_buffer_line3 + 2
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x6
+		goto	mode_testfp_test_pwr_cntrls_shutdown
+	btfsc	_mr_test_select, 0x4
+		goto	mode_testfp_test_pwr_cntrls_shutdown
+	btfsc	_mr_test_select, 0x5
+		call	screen_write_char
+mode_testfp_test_pwr_cntrls_shutdown
+	movlw	_mr_screen_buffer_line3 + 4
+	movwf	FSR
+	movlw	str_tests_shutdown - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	movlw	_mr_screen_buffer_line3 + 16
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x6
+		goto	mode_testfp_test_pwr_cntrls_shutdown_value
+	btfsc	_mr_test_select, 0x4
+		goto	mode_testfp_test_pwr_cntrls_shutdown_value
+	btfsc	_mr_test_select, 0x5
+		call	screen_write_char
+mode_testfp_test_pwr_cntrls_shutdown_value
+	movlw	_mr_screen_buffer_line3 + 17
+	movwf	FSR
+	clrw
+	banksel	PORTB
+	btfsc	PORTB, 0x7
+		movlw	0x1
+	call	screen_write_byte_as_hex
+
+; Actions
+;*******************
+mode_testfp_test_pwr_cntrls_process_cmd
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, F
+	btfsc	STATUS, Z				; Check for a change of command state
+		goto	mode_testfp_test_pwr_cntrls_exit
+	btfsc	_mr_test_select, 0x6			; Test if the value is selected
+		goto	mode_testfp_test_pwr_cntrls_process_cmd_toggle
+	sublw	CMD_UP
+	btfsc	STATUS, Z				; Check for a up command
+		call	mode_testfp_dec_selected_subtest
+	movf	_mr_cmd_cur, W
+	sublw	CMD_DOWN
+	btfsc	STATUS, Z				; Check for a down command
+		call	mode_testfp_inc_selected_subtest
+	goto	mode_testfp_test_pwr_cntrls_process_cmd_select
+
+mode_testfp_test_pwr_cntrls_process_cmd_toggle
+	movf	_mr_cmd_cur, W
+	sublw	CMD_RIGHT
+	btfss	STATUS, Z				; Check for a right command
+		goto	mode_testfp_test_pwr_cntrls_process_cmd_select
+	btfsc   _mr_test_select, 0x4
+		goto	mode_testfp_test_pwr_cntrls_process_cmd_toggle_reset
+	btfsc   _mr_test_select, 0x5
+		goto	mode_testfp_test_pwr_cntrls_process_cmd_toggle_shutdown
+	call	set_psu_toggle
+	goto	mode_testfp_test_pwr_cntrls_process_cmd_select
+mode_testfp_test_pwr_cntrls_process_cmd_toggle_reset
+	call	ctrl_rpi_reset_toggle
+	goto	mode_testfp_test_pwr_cntrls_process_cmd_select
+mode_testfp_test_pwr_cntrls_process_cmd_toggle_shutdown
+	call	ctrl_rpi_shutdown_toggle
+	goto	mode_testfp_test_pwr_cntrls_process_cmd_select
+
+mode_testfp_test_pwr_cntrls_process_cmd_select
+	movf	_mr_cmd_cur, W
+	sublw	CMD_SELECT
+	btfsc	STATUS, Z				; Check for a select command
+		call	mode_testfp_toggle_subtest_select
+
+mode_testfp_test_pwr_cntrls_check
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x5			; Check if we've gone too far
+		goto	mode_testfp_test_pwr_cntrls_exit
+	btfss	_mr_test_select, 0x4			; Check if we've gone too far
+		goto	mode_testfp_test_pwr_cntrls_exit
+	bcf	_mr_test_select, 0x4			; Reset value
+
+mode_testfp_test_pwr_cntrls_exit
 	return
 
 ;***********************************************************************
@@ -1255,7 +1420,6 @@ mode_testfp_test_i2c_master_process_cmd
 	sublw	CMD_DOWN
 	btfsc	STATUS, Z				; Check for a down command
 		call	mode_testfp_inc_selected_subtest
-	movf	_mr_cmd_cur, W
 	goto	mode_testfp_test_i2c_master_process_cmd_select
 mode_testfp_test_i2c_master_process_cmd_value
 	sublw	CMD_UP
@@ -1265,8 +1429,8 @@ mode_testfp_test_i2c_master_process_cmd_value
 	sublw	CMD_DOWN
 	btfsc	STATUS, Z				; Check for a down command
 		call	mode_testfp_dec_selected_ds1845_value
-	movf	_mr_cmd_cur, W
 mode_testfp_test_i2c_master_process_cmd_select
+	movf	_mr_cmd_cur, W
 	sublw	CMD_SELECT
 	btfsc	STATUS, Z				; Check for a select command
 		call	mode_testfp_toggle_subtest_select
@@ -1285,14 +1449,108 @@ mode_testfp_test_i2c_master_exit
 ; mode_testfp_test_i2c_slave
 ;
 mode_testfp_test_i2c_slave
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x6
+		goto	mode_testfp_test_i2c_slave_run
+	bsf	_mr_test_select, 0x6
+	call	set_mpu_as_i2c_slave			; Execute this only once
 	call	screen_clear
 
-	movlw	_mr_screen_buffer_line2 + 4
+mode_testfp_test_i2c_slave_run
+	movlw	_mr_screen_buffer_line1
 	movwf	FSR
-
-	movlw	str_tests_not_avail - STR_TESTS_BASE_ADDR
+	movlw	str_tests_sspcon - STR_TESTS_BASE_ADDR
 	call	screen_write_flash_2_buffer_tests_str
 
+	banksel	SSPCON
+	movf	SSPCON, W
+	call	screen_write_byte_as_hex
+	movlw	'/'
+	call	screen_write_char
+	banksel	SSPCON2
+	movf	SSPCON2, W
+	call	screen_write_byte_as_hex
+
+	movlw	_mr_screen_buffer_line1 + 12
+	movwf	FSR
+	movlw	str_tests_sspstat - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	banksel	SSPSTAT
+	movf	SSPSTAT, W
+	call	screen_write_byte_as_hex
+
+	movlw	_mr_screen_buffer_line2
+	movwf	FSR
+	movlw	str_tests_size - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	banksel	_mr_i2c_cmd_size
+	movf	_mr_i2c_cmd_size, W
+	call	screen_write_byte_as_hex
+
+	movlw	_mr_screen_buffer_line2 + 6
+	movwf	FSR
+	movlw	str_tests_rx_tx_err - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	banksel	_mr_i2c_rx_count
+	movf	_mr_i2c_rx_count, W
+	call	screen_write_byte_as_hex
+	movlw	'/'
+	call	screen_write_char
+	banksel	_mr_i2c_tx_count
+	movf	_mr_i2c_tx_count, W
+	call	screen_write_byte_as_hex
+	movlw	'/'
+	call	screen_write_char
+	banksel	_mr_i2c_err_count
+	movf	_mr_i2c_err_count, W
+	call	screen_write_byte_as_hex
+
+	banksel	_mr_loop1
+	clrf	_mr_loop1
+	clrf	_mr_loop2
+mode_testfp_test_i2c_slave_buffer_read
+	movlw	_mr_i2c_buffer
+	addwf	_mr_loop1, W
+	btfsc	_mr_loop2, 0x0
+		addlw	0xa				; If it's the second line, add the appropriate offset
+	movwf	FSR
+	movf	INDF, W
+	movwf	_mr_temp
+
+	rlf	_mr_loop1, W				; Multiply by 2 (2 chars per byte)
+	addlw	_mr_screen_buffer_line3
+	btfsc	_mr_loop2, 0x0				; If it's the second line, add the appropriate offset
+		addlw	_mr_screen_buffer_line4 - _mr_screen_buffer_line3
+	movwf	FSR
+	movf	_mr_temp, W
+	call	screen_write_byte_as_hex
+
+	banksel	_mr_loop1
+	incf	_mr_loop1, F
+	movf	_mr_loop1, W
+	sublw	0xa
+	btfss	STATUS, Z
+		goto	mode_testfp_test_i2c_slave_buffer_read
+	btfsc	_mr_loop2, 0x0
+		goto	mode_testfp_test_i2c_slave_process_cmd
+	clrf	_mr_loop1
+	bsf	_mr_loop2, 0x0
+	goto	mode_testfp_test_i2c_slave_buffer_read
+
+mode_testfp_test_i2c_slave_process_cmd
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, F
+	btfsc	STATUS, Z				; Check for a change of command state
+		goto	mode_testfp_test_i2c_slave_exit
+	sublw	CMD_PAUSE
+	btfsc	STATUS, Z				; Check for a pause command
+		call	i2c_slave_toggle_clock_stretch	; Disable i2c clock (SCL) line
+
+mode_testfp_test_i2c_slave_exit
 	return
 
 ;***********************************************************************
@@ -1312,11 +1570,12 @@ mode_powercontrol_init
 	banksel	_mr_screen_buffer_update
 	bsf	_mr_screen_buffer_update, 0x1			; Disable screen updates from buffer
 
+	movlw	(LCD_BASE_ADDR>>8)		; Select high address
+	movwf	PCLATH				; For the next 'call'
 	call	LCD_PORT_CONFIGURE
-
 	call	LCD_CLEAR_SCREEN				; Clear screen
-
 	call	LCD_PORT_RESTORE
+	clrf	PCLATH
 
 	banksel	_mr_mode_prev
 	movlw	MODE_POWERCTRL
@@ -1333,6 +1592,9 @@ mode_powercontrol_update_display
 	btfss	_mr_screen_buffer_update, 0x0			; Check if the lcd should be updated
 		goto	mode_powercontrol_update_display_exit
 	bcf	_mr_screen_buffer_update, 0x0
+
+	movlw	(LCD_BASE_ADDR>>8)		; Select high address
+	movwf	PCLATH				; For the next 'call'
 
 	call	LCD_PORT_CONFIGURE
 
@@ -1376,6 +1638,8 @@ mode_powercontrol_update_display
 	call	LCD_WRITE_EEPROM_2_BUFFER
 
 	call	LCD_PORT_RESTORE
+
+	clrf	PCLATH
 
 mode_powercontrol_update_display_exit
 	return
@@ -1437,14 +1701,20 @@ mode_powercontrol_control_exec
 mode_powercontrol_control_exec_shutdown
 	btfss	_mr_pwrctrl_select, 0x0
 		goto	mode_powercontrol_control_exec_reset
-	call	ctrl_rpi_shutdown
+	call	ctrl_rpi_shutdown_active
+	nop							; NOPs to add a delay
+	nop
+	call	ctrl_rpi_shutdown_clear
 	call	mode_powercontrol_back_2_poweron
 	goto	mode_powercontrol_control_exec_exit
 
 mode_powercontrol_control_exec_reset
 	btfss	_mr_pwrctrl_select, 0x1
 		goto	mode_powercontrol_control_exec_poweroff
-	call	ctrl_rpi_reset
+	call	ctrl_rpi_reset_active
+	nop							; NOPs to add a delay
+	nop
+	call	ctrl_rpi_reset_clear
 	call	mode_powercontrol_back_2_poweron
 	goto	mode_powercontrol_control_exec_exit
 
@@ -1466,7 +1736,6 @@ mode_powercontrol_control_exec_exit
 ;***********************************************************************
 ; Reset the i2c interface as a slave
 set_mpu_as_i2c_slave
-	clrf	PIR1						; Clear interrupt flag
 	call	i2c_slave_init
 
 	bsf	INTCON,PEIE 					; Enable all peripheral interrupts
@@ -1477,40 +1746,80 @@ set_mpu_as_i2c_slave
 ; Set PSU state
 set_psu_off
 	banksel	PORTC
-	bcf	PORTC, 0x00
+	bcf	PORTC, 0x0
 	return
 
 set_psu_on
 	banksel	PORTC
-	bsf	PORTC, 0x00
+	bsf	PORTC, 0x0
+	return
+
+set_psu_toggle
+	banksel	PORTC
+	btfsc	PORTC, 0x0
+		goto	set_psu_toggle_off
+	call	set_psu_on
+	goto	set_psu_toggle_exit
+set_psu_toggle_off
+	call	set_psu_off
+set_psu_toggle_exit
 	return
 
 ;***********************************************************************
 ; Raspberry Pi controls
 ; Reset toggles the function of the control pin between input and output
-; so as to allow the built in RC Power-On Reset system to function. So,
-; to reset the pin is made an output (set low), then the pin is changed
-; back to an input to provide a high impedance. This then allows the RC
-; circuit to charge normally.
-ctrl_rpi_reset
+; so as to allow the built in RC Power-On Reset system to function (Also
+; applying 5V to the Pi would be very bad!). So, to reset the pin is
+; made an output (set low), then the pin is changed back to an input to
+; provide a high impedance. This then allows the RC circuit to charge
+; normally.
+ctrl_rpi_reset_active
 	banksel	PORTA
-	bcf	PORTA, 0x05
+	bcf	PORTA, 0x5			; MAKE SURE OUTPUT LOW
+	banksel	TRISA				; OTHERWISE THIS WILL
+	bcf	TRISA, 0x5			; APPLY 5V to RPI
+	return
+
+ctrl_rpi_reset_clear
 	banksel	TRISA
-	bcf	TRISA, 0x05
-	nop							; NOPs should provide sufficient delay
-	nop
-	bsf	TRISA, 0x05
+	bsf	TRISA, 0x5			; Reset to being an input
+	return
+
+ctrl_rpi_reset_toggle
+	banksel	TRISA
+	btfss	TRISA, 0x5
+		goto	ctrl_rpi_reset_toggle_clear
+	call	ctrl_rpi_reset_active
+	goto	ctrl_rpi_reset_toggle_exit
+ctrl_rpi_reset_toggle_clear
+	call	ctrl_rpi_reset_clear
+ctrl_rpi_reset_toggle_exit
 	return
 
 ; This routine signals to the RPi to shutdown by pulsing a particular
 ; GPIO. See dtoverlay: gpio-shutdown
 ;***********************************************************************
-ctrl_rpi_shutdown
-	banksel	PORTB
-	bsf	PORTB, 0x07
-	nop							; NOPs should provide sufficient delay
-	nop
-	bcf	PORTB, 0x07
+ctrl_rpi_shutdown_active
+	banksel	PORTB				; This is overkill
+	bcf	PORTB, 0x7			; but should ensure
+	banksel	TRISB				; no false shutdowns
+	bcf	TRISB, 0x7
+	return
+
+ctrl_rpi_shutdown_clear
+	banksel	TRISB
+	bsf	TRISB, 0x7
+	return
+
+ctrl_rpi_shutdown_toggle
+	banksel	TRISB
+	btfss	TRISB, 0x7
+		goto	ctrl_rpi_shutdown_toggle_clear
+	call	ctrl_rpi_shutdown_active
+	goto	ctrl_rpi_shutdown_toggle_exit
+ctrl_rpi_shutdown_toggle_clear
+	call	ctrl_rpi_shutdown_clear
+ctrl_rpi_shutdown_toggle_exit
 	return
 
 ; Enables the external interrupt pin. This allows the RPi to signal a
@@ -1559,44 +1868,46 @@ set_online_led_on
 
 ;***********************************************************************
 ; Saves the current backlight/contrast values to EEPROM, then clears
-lcd_backlight_contrast_settings_save_then_clear
+;lcd_backlight_contrast_settings_save_then_clear
+;	banksel	_mr_i2c_buffer_index
+;	movlw	CONTRAST_ADDR			; Load the address of the contrast control
+;	movwf	_mr_i2c_buffer_index		; as it's first
+;
+;	banksel	EEADR
+;	movlw	eeprom_lcd_contrast - 0x2100	; Load the address of the contrast value
+;	movwf	EEADR				; as it's first
+;	clrf	EEADRH
+;
+;lcd_backlight_contrast_settings_save_then_clear_loop
+;	call	i2c_master_ds1845_read		; Read current value
+;
+;	call	pic_eeprom_read			; Read stored value
+;
+;	banksel	_mr_i2c_buffer
+;	subwf	_mr_i2c_buffer, W		; Test stored value against current value
+;	btfsc	STATUS, Z
+;		goto	lcd_backlight_contrast_settings_save_then_clear_next
+;
+;	movf	_mr_i2c_buffer, W
+;	banksel	EEDATA
+;	movwf	EEDATA
+;	decf	EEADR, F			; This was previously incremented, need the old value
+;
+;	call	pic_eeprom_write_finish_wait
+;
+;	call    pic_eeprom_write
+;
+;lcd_backlight_contrast_settings_save_then_clear_next
+;	banksel	_mr_i2c_buffer_index
+;	incf	_mr_i2c_buffer_index, F		; Increment the control address
+;
+;	movf	_mr_i2c_buffer_index, W
+;	sublw	BACKLIGHT_ADDR			; Subtract the address of the backlight value
+;	btfsc	STATUS, Z			; Loop if we still have the backlight to do
+;		goto	lcd_backlight_contrast_settings_save_then_clear_loop
+
+lcd_backlight_contrast_settings_clear
 	banksel	_mr_i2c_buffer_index
-	movlw	CONTRAST_ADDR			; Load the address of the contrast control
-	movwf	_mr_i2c_buffer_index		; as it's first
-
-	banksel	EEADR
-	movlw	eeprom_lcd_contrast - 0x2100	; Load the address of the contrast value
-	movwf	EEADR				; as it's first
-	clrf	EEADRH
-
-lcd_backlight_contrast_settings_save_then_clear_loop
-	call	i2c_master_ds1845_read		; Read current value
-
-	call	pic_eeprom_read			; Read stored value
-
-	banksel	_mr_i2c_buffer
-	subwf	_mr_i2c_buffer, W		; Test stored value against current value
-	btfsc	STATUS, Z
-		goto	lcd_backlight_contrast_settings_save_then_clear_next
-
-	movf	_mr_i2c_buffer, W
-	banksel	EEDATA
-	movwf	EEDATA
-	decf	EEADR, F			; This was previously incremented, need the old value
-
-	call	pic_eeprom_write_finish_wait
-
-	call    pic_eeprom_write
-
-lcd_backlight_contrast_settings_save_then_clear_next
-	banksel	_mr_i2c_buffer_index
-	incf	_mr_i2c_buffer_index, F		; Increment the control address
-
-	movf	_mr_i2c_buffer_index, W
-	sublw	BACKLIGHT_ADDR			; Subtract the address of the backlight value
-	btfsc	STATUS, Z			; Loop if we still have the backlight to do
-		goto	lcd_backlight_contrast_settings_save_then_clear_loop
-
 	movlw	BACKLIGHT_ADDR
 	movwf	_mr_i2c_buffer_index
 	clrf	_mr_i2c_buffer
@@ -1682,13 +1993,13 @@ init_mpu
 	banksel	TRISA
 ;	movlw	0xEF
 ;	movwf	TRISA					; Configure PORTA (Inputs: 0,1,2,3,5,6,7 | Outputs: 4)
-	movlw	0xCF
-	movwf	TRISA					; Configure PORTA (Inputs: 0,1,2,3,6,7 | Outputs: 4,5)
+	movlw	0xEF
+	movwf	TRISA					; Configure PORTA (Inputs: 0,1,2,3,5,6,7 | Outputs: 4)
 
 ;	movlw	0xF7
 ;	movwf	TRISB					; Configure PORTB (Inputs: 0,1,2,4,5,6,7 | Outputs: 3)
-	movlw	0x77
-	movwf	TRISB					; Configure PORTB (Inputs: 0,1,2,4,5,6 | Outputs: 3,7)
+	movlw	0xF7
+	movwf	TRISB					; Configure PORTB (Inputs: 0,1,2,4,5,6,7 | Outputs: 3)
 
 ;	movlw	0x1D
 ;	movwf	TRISC					; Configure PORTC (Inputs: 0,2,3,4 | Outputs: 1,5,6,7)
@@ -1786,7 +2097,10 @@ init_mem
 init_board
 	clrwdt
 
+	movlw	(LCD_BASE_ADDR>>8)		; Select high address
+	movwf	PCLATH				; For the next 'call'
 	call	LCD_INITIALIZE
+	clrf	PCLATH
 
 	call	i2c_master_init
 
@@ -1814,12 +2128,12 @@ waste_time_l1
 	include "buttons.asm"
 	include "i2c_master.asm"
 	include "i2c_slave.asm"
-	include "lcd.asm"
 	include	"pic_eeprom.asm"
 	include	"screen.asm"
 	include "commands.asm"
 
-	include	"ir_receiver.asm"			; This has a fixed location so needs to be loaded last
+	include "lcd.asm"				; This has a fixed location, so needs to be loaded last
+	include	"ir_receiver.asm"			; This has a fixed location, so needs to be loaded last
 	include	"strings.asm"				; This has a fixed location, so needs to be loaded last
 	include	"jmp_tables.asm"			; This has a table at a fixed location, so needs to be loaded last
 
@@ -1829,9 +2143,8 @@ waste_time_l1
 ;***********************************************************************
 ;***********************************************************************
 .eedata	org	0x2100
-;eeprom_lcd_contrast	de	0x00
-eeprom_lcd_contrast	de	0x5d
-eeprom_lcd_backlight	de	0x3f
+eeprom_lcd_contrast	de	0x00
+eeprom_lcd_backlight	de	0x7f
 eeprom_ir_addr_lsb	de	0x24
 eeprom_ir_addr_msb	de	0x42
 eeprom_str_poweroff	de	"Power Off\0"

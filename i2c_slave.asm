@@ -1,31 +1,45 @@
-;-----------------------------------------------------------------------------------------------
-; The macro LOADFSR loads FSR1 with the I2C address and the I2C index value to read or write to
-; and makes code easier to read.
-;------------------------------------- LOADFSR macro -------------------------------------------
-
-LOADFSR macro 	ADDRESS, INDEX 					; ADDRESS = I2C_ARRAY, INDEX = _mr_i2c_buffer_index
-		movlw 	ADDRESS 				; load address
-		addwf	INDEX, W				; add the index value to determine location in array
-		movwf 	FSR					; load FSR1L with pointer info
-		endm
-
 ;---------------------------------------------------------------------
 ; Initializes program variables and peripheral registers.
 ;---------------------------------------------------------------------
 i2c_slave_init
 	banksel	TRISC
-	bsf     TRISC, 0x03
+	bsf     TRISC, 0x03						; Set the ports as inputs
 	bsf     TRISC, 0x04
-	movlw   NODE_ADDR
+
+	movlw   NODE_ADDR						; Set slave address
 	movwf   SSPADD
+
 	clrf    SSPSTAT
-	bsf     SSPSTAT, 0x07					; Slew rate control disabled for standard speed mode (100 kHz and 1 MHz)
-	bsf     PIE1,SSPIE
+	bsf     SSPSTAT, 0x07						; Slew rate control disabled for standard speed mode (100 kHz and 1 MHz)
 
+	bsf     PIE1,SSPIE						; Enable SSP interrupt
+
+	banksel	PIR1
+	bcf	PIR1, SSPIF						; Clear SSP interrupt
+
+	clrf	SSPCON							; Disable SSP to force reinitialisation
+	movlw   0x36							; Setup SSP module for 7-bit address, slave mode
+	movwf   SSPCON
+
+	clrf	_mr_i2c_state						; Reset state
+	clrf	_mr_i2c_rx_count					; Reset counters
+	clrf	_mr_i2c_tx_count
+	clrf	_mr_i2c_err_count
+
+	return
+
+;-----------------------------------------------------------------------------------------------
+; i2c slave toggles the CKP bit (used for testing)
+;-----------------------------------------------------------------------------------------------
+i2c_slave_toggle_clock_stretch
 	banksel	SSPCON
-	movlw   0x36						; Setup SSP module for 7-bit
-	movwf   SSPCON						; address, slave mode
-
+	btfsc	SSPCON, CKP
+		goto	i2c_slave_toggle_clock_stretch_low
+	bsf	SSPCON, CKP
+	goto	i2c_slave_toggle_clock_stretch_exit
+i2c_slave_toggle_clock_stretch_low
+	bcf	SSPCON, CKP
+i2c_slave_toggle_clock_stretch_exit
 	return
 
 ;-----------------------------------------------------------------------------------------------
@@ -33,157 +47,130 @@ i2c_slave_init
 ;-----------------------------------------------------------------------------------------------
 i2c_slave_ssp_handler
 	banksel	PIR1
-	btfss 	PIR1, SSPIF 					; Is this a SSP interrupt?
-		goto 	i2c_slave_ssp_handler_bus_coll 		; if not, bus collision int occurred (does this occur in slave mode?)
+	bcf 	PIR1, SSPIF						; clear the SSP interrupt flag
 
 	banksel	SSPSTAT
-	btfsc	SSPSTAT, 2					; is it a master read:
-		goto	i2c_slave_ssp_handler_read		; if so go here
-	goto	i2c_slave_ssp_handler_write			; if not, go here
+	btfsc	SSPSTAT, 5						; was last byte an address or data?
+		goto	i2c_slave_ssp_handler_active
 
-i2c_slave_ssp_handler_read
-	btfss	SSPSTAT, 5					; was last byte an address or data?
-		goto	i2c_slave_ssp_handler_read_address	; if clear, it was an address
-	goto	i2c_slave_ssp_handler_read_data			; if set, it was data
+	clrw
+	btfsc	SSPSTAT, 2						; Is this a read
+		iorlw	(1<<I2C_SLAVE_STATE_BIT_READ_NOT_WRITE)		; Set the flag
+	banksel	_mr_i2c_state
+	movwf	_mr_i2c_state
 
-i2c_slave_ssp_handler_read_address
-	banksel	SSPBUF
-        movfw   SSPBUF						; Get the buffer data (clear BF)
-        clrf    _mr_i2c_buffer_index
-        clrf	W                           			; clear W
-	movlw	0x03						; load array elements value (size of button bank)
-	btfsc	STATUS, Z					; is Z clear?
-		subwf	_mr_i2c_buffer_index,W			; if Z = 1, subtract index from number of elements
-	btfsc	STATUS, C					; did a carry occur after subtraction?
-		goto	i2c_slave_ssp_handler_read_data_reset	; if so, Master is trying to read too many bytes, so reset
-	LOADFSR	_mr_button_bank, _mr_i2c_buffer_index		; call LOADFSR macro
-	movf	INDF, W						; move value into W to load to SSP buffer
-	movwf	SSPBUF						; load SSP buffer
-	btfsc	SSPCON, WCOL					; did a write collision occur?
-	        call    i2c_slave_ssp_handler_write_coll	; if so, go clear bit
-        LOADFSR	_mr_button_bank, _mr_i2c_buffer_index		; call LOADFSR macro
-        movlw   I2C_CHAR_CLEAR					; load I2C_CHAR_CLEAR into W
-        movwf   INDF						; load W into array
-	incf	_mr_i2c_buffer_index, F				; increment _mr_i2c_buffer_index 'pointer'
-	bsf	SSPCON, CKP					; release clock stretch
-	bcf 	PIR1, SSPIF					; clear the SSP interrupt flag
-	goto    i2c_slave_ssp_handler_exit 			; Go to i2c_slave_ssp_handler_exit to return from interrupt
+i2c_slave_ssp_handler_active
+	banksel	_mr_i2c_state
+	btfsc	_mr_i2c_state, I2C_SLAVE_STATE_BIT_READ_NOT_WRITE
+		goto	i2c_slave_ssp_handler_master_read
+	goto	i2c_slave_ssp_handler_master_write
 
-i2c_slave_ssp_handler_read_data
-	banksel	SSPBUF
+;-----------------------------------------------------------------------------------------------
+; i2c slave (Master read)
+;-----------------------------------------------------------------------------------------------
+i2c_slave_ssp_handler_master_read
+	banksel	SSPSTAT
+	btfss	SSPSTAT, 2						; Check for an NACK (end of comms)
+		goto	i2c_slave_ssp_handler_master_read_exit
 
-	clrf	W       					; clear W
-	movlw	0x03						; load array elements value
-	btfsc	STATUS, Z					; is Z clear?
-		subwf	_mr_i2c_buffer_index, W			; if Z = 1, subtract index from number of elements
-	btfsc	STATUS, C					; did a carry occur after subtraction?
-		goto	i2c_slave_ssp_handler_read_data_reset	; if so, Master is trying to read too many bytes, so reset
-	LOADFSR	_mr_button_bank, _mr_i2c_buffer_index		; call LOADFSR macro
-	movf	INDF, W						; move value into W to load to SSP buffer
-	movwf	SSPBUF						; load SSP buffer
-	btfsc	SSPCON, WCOL					; did a write collision occur?
-	        call    i2c_slave_ssp_handler_write_coll	; if so, go clear bit
-        LOADFSR	_mr_button_bank, _mr_i2c_buffer_index		; call LOADFSR macro
-        movlw   I2C_CHAR_CLEAR					; load I2C_CHAR_CLEAR into W
-        movwf   INDF						; load W into array
-	incf	_mr_i2c_buffer_index, F				; increment _mr_i2c_buffer_index 'pointer'
-	bsf	SSPCON, CKP					; release clock stretch
-	bcf 	PIR1, SSPIF					; clear the SSP interrupt flag
-	goto    i2c_slave_ssp_handler_exit 			; Go to i2c_slave_ssp_handler_exit to return from interrupt
+	banksel	_mr_i2c_state
+	bsf	_mr_i2c_state, I2C_SLAVE_STATE_BIT_DATA_NOT_ADDRESS
+	incf	_mr_i2c_tx_count, F
 
-i2c_slave_ssp_handler_read_data_reset
-	clrf	_mr_i2c_buffer_index
-	goto	i2c_slave_ssp_handler_read_data
+	movf	_mr_cmd_cur, W						; move command value into W to
 
-i2c_slave_ssp_handler_write
-	btfss	SSPSTAT, 5					; was last byte an address or data?
-		goto	i2c_slave_ssp_handler_write_address	; if clear, it was an address
-	goto	i2c_slave_ssp_handler_write_data		; if set, it was data
+	movwf	SSPBUF							; load SSP buffer
+	btfsc	SSPCON, WCOL						; did a write collision occur?
+	        call    i2c_slave_ssp_handler_master_write_coll		; if so, go clear bit
 
-i2c_slave_ssp_handler_write_address
-	banksel	SSPBUF
+i2c_slave_ssp_handler_master_read_exit
+	banksel	SSPCON
+	bsf	SSPCON, CKP						; release clock stretch
 
-	clrf	_mr_i2c_cmd_status
-	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_LOADING	; Set the command status flag, so we don't try to process until it's complete
-	clrf	_mr_i2c_cmd_size
-	clrf	_mr_i2c_buffer_index				; Clear the buffer _mr_i2c_buffer_index.
+	btfsc	SSPCON, CKP						; Test the clock stretch bit (should already be set)
+		return
 
-	movfw	SSPBUF						; move the contents of the buffer into W
-								; dummy read to clear the BF bit
-	bsf	SSPCON, CKP					; release clock stretch
-	bcf 	PIR1, SSPIF					; clear the SSP interrupt flag
-	goto    i2c_slave_ssp_handler_exit 			; Go to i2c_slave_ssp_handler_exit to return from interrupt
-
-i2c_slave_ssp_handler_write_data
-	banksel	SSPBUF
-
-        clrf	W						; clear W
-	movf    _mr_i2c_cmd_size, F				; Have we loaded in the payload size yet
-	btfss   STATUS, Z
-		GOTO i2c_slave_ssp_handler_write_data_save_data
-	movf    SSPBUF, W					; Get the byte from the SSP.
-	movwf   _mr_i2c_cmd_size				; Set the payload size
-	sublw	RX_BUF_LEN					; Check the payload size is not larger than the buffer
-	btfsc	STATUS, C
-		goto	i2c_slave_ssp_handler_write_data_release
-	movlw	RX_BUF_LEN					; If it is,
-	movwf	_mr_i2c_cmd_size				; Reset the payload size to the buffer size
-	goto	i2c_slave_ssp_handler_write_data_release
-i2c_slave_ssp_handler_write_data_save_data
-	movf	_mr_i2c_cmd_size, W				; load payload size
-	btfsc	STATUS, Z					; is Z clear?
-		goto	i2c_slave_ssp_handler_no_mem_overwrite	; if so, Master is trying to write to many bytes
-	subwf	_mr_i2c_buffer_index, W				; if Z = 0, subtract index from number of elements
-	btfsc	STATUS, C					; did a carry occur after subtraction?
-		goto	i2c_slave_ssp_handler_no_mem_overwrite	; if so, Master is trying to write to many bytes
-	LOADFSR	_mr_i2c_buffer, _mr_i2c_buffer_index		; call LOADFSR macro
-	movfw	SSPBUF						; move the contents of the buffer into W
-	movwf 	INDF						; load INDF with data to write
-	incf	_mr_i2c_buffer_index, F				; increment _mr_i2c_buffer_index 'pointer'
-	movf	_mr_i2c_buffer_index, W				; Get the current buffer _mr_i2c_buffer_index.
-	subwf	_mr_i2c_cmd_size, W
-        btfsc	STATUS, Z
-		bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_LOADED	; Set the status flag, so we ignore any more data
-i2c_slave_ssp_handler_write_data_release
-	btfsc	SSPCON, WCOL					; did a write collision occur?
-		call    i2c_slave_ssp_handler_write_coll	; if so, go clear bit
-	bsf	SSPCON, CKP					; release clock stretch
-	bcf 	PIR1, SSPIF					; clear the SSP interrupt flag
-	goto    i2c_slave_ssp_handler_exit 			; Go to i2c_slave_ssp_handler_exit to return from interrupt
-
-i2c_slave_ssp_handler_no_mem_overwrite
-	movfw	SSPBUF						; move SSP buffer to W
-                    						; clear buffer so no overwrite occurs
-	bsf	SSPCON, CKP					; release clock stretch
-	bcf 	PIR1, SSPIF					; clear the SSP interrupt flag
-	goto    i2c_slave_ssp_handler_exit 			; Go to i2c_slave_ssp_handler_exit to return from interrupt
-
-i2c_slave_ssp_handler_write_coll
-	bcf	SSPCON, WCOL					; clear WCOL bit
-	movfw	SSPBUF						; move SSP buffer to W
-                    						; dummy read to clear the BF bit
-        return
-
-i2c_slave_ssp_handler_bus_coll
-	movfw	SSPBUF						; move SSP buffer to W
-                    						; dummy read to clear the BF bit
-	bcf	PIR2, BCLIF					; clear the SSP interrupt flag
-	bsf	SSPCON, CKP					; release clock stretch
-	goto    i2c_slave_ssp_handler_exit			; Go to i2c_slave_ssp_handler_exit to return from interrupt
-
-i2c_slave_ssp_handler_exit
+	bcf	SSPCON, SSPEN						; The hardware has locked up
+	bsf	SSPCON, SSPEN						; So reset it
+	bsf	SSPCON, CKP
+	clrf	_mr_i2c_state						; Reset state
+	incf	_mr_i2c_err_count, F
 	return
 
+;-----------------------------------------------------------------------------------------------
+; i2c slave (Master write)
+;-----------------------------------------------------------------------------------------------
+i2c_slave_ssp_handler_master_write
+	btfss	_mr_i2c_state, I2C_SLAVE_STATE_BIT_DATA_NOT_ADDRESS	; was last byte an address or data?
+		goto	i2c_slave_ssp_handler_master_write_address	; if clear, it was an address
+	goto	i2c_slave_ssp_handler_master_write_data			; if set, it was data
+
+i2c_slave_ssp_handler_master_write_address
+	movf	SSPBUF, W						; dummy read to clear the BF bit
+	bsf	_mr_i2c_state, I2C_SLAVE_STATE_BIT_DATA_NOT_ADDRESS
+
+	clrf	_mr_i2c_cmd_status
+	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_LOADING		; Set the command status flag, so we don't try to process until it's complete
+	clrf	_mr_i2c_cmd_size
+	movlw	_mr_i2c_buffer
+	movwf	_mr_i2c_buffer_index					; Reset buffer pointer
+	return
+
+i2c_slave_ssp_handler_master_write_data
+	incf	_mr_i2c_rx_count, F
+
+	btfsc	_mr_i2c_state, I2C_SLAVE_STATE_BIT_SAVED_CMD_SIZE	; Check if the command size is set
+		goto	i2c_slave_ssp_handler_master_write_data_save
+
+	bsf	_mr_i2c_state, I2C_SLAVE_STATE_BIT_SAVED_CMD_SIZE	; Set flag
+	movf	SSPBUF, W						; Get the byte from the SSP.
+	btfsc	STATUS, Z						; Make sure cmd size is not zero
+		movlw	0x1						; Otherwise this will cause a buffer overflow
+	movwf	_mr_i2c_cmd_size					; Save the command size
+	sublw	RX_BUF_LEN						; Check the command size
+	btfsc	STATUS, C
+		return
+	movlw	RX_BUF_LEN
+	movwf	_mr_i2c_cmd_size					; Reset the payload size to the buffer size
+	return
+
+i2c_slave_ssp_handler_master_write_data_save
+	movf	_mr_i2c_buffer_index, W					; Get the i2c buffer index
+	movwf	FSR							; Update FSR with it
+	movf	SSPBUF, W						; Move the contents of the buffer into W
+	movwf 	INDF							; Write it to INDF
+
+	decf	_mr_i2c_cmd_size, W					; Calculate buffer end (from cmd size)
+	addlw	_mr_i2c_buffer
+	subwf	_mr_i2c_buffer_index, W
+	btfsc	STATUS, Z
+		bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_LOADED	; Set the status flag, so we can process data
+	btfss	STATUS, Z
+		incf	_mr_i2c_buffer_index, F				; Increment i2c buffer index
+	return
+
+;---------------------------------------------------------------------
+; Clear a write collision
+;---------------------------------------------------------------------
+i2c_slave_ssp_handler_master_write_coll
+	bcf	SSPCON, WCOL						; clear WCOL bit
+	movf	SSPBUF, W						; move SSP buffer to W
+									; dummy read to clear the BF bit
+	return
+
+;---------------------------------------------------------------------
+; Clear an overflow condition
+;---------------------------------------------------------------------
 i2c_slave_clear_overflow
 	banksel	SSPCON
-	btfss	SSPCON, SSPOV					; Has an overflow occured
-		call	i2c_slave_clear_overflow_exit		; if so, clear it
+	btfss	SSPCON, SSPOV						; Has an overflow occured
+		call	i2c_slave_clear_overflow_exit			; if so, clear it
 
-	movfw	SSPBUF						; move SSP buffer to W
-                    						; dummy read to clear the BF bit
-	bcf	SSPCON, SSPOV					; clear overflow flag
+	movf	SSPBUF, W						; move SSP buffer to W
+									; dummy read to clear the BF bit
+	bcf	SSPCON, SSPOV						; clear overflow flag
 
-	bcf	PIR1, SSPIF					; clear the SSP interrupt flag
+	bcf	PIR1, SSPIF						; clear the SSP interrupt flag
 
 i2c_slave_clear_overflow_exit
 	return

@@ -32,6 +32,16 @@ str_tests_rcvd_addr		da	"Rcvd Addr:\0"			; Recieved Address
 str_tests_rcvd_cmd		da	"Rcvd Cmd:\0"			; Recieved Command
 str_tests_backlight		da	"Backlight\0"
 str_tests_contrast		da	"Contrast\0"
+str_tests_power			da	"Power\0"
+str_tests_reset			da	"Reset\0"
+str_tests_shutdown		da	"Shutdown\0"
+str_tests_size			da	"Sz:\0"
+str_tests_buffer		da	"Buffer:\0"
+str_tests_sspcon		da	"SSPCN:\0"
+str_tests_sspstat		da	"SSPST:\0"
+str_tests_pir1			da	"PIR1:\0"
+str_tests_rx_tx_err		da	"R/T/E:\0"
+
 
 str_tests_lcd_line1		da	"ABCDEFGHIJKLMNOPQRST\0"	; LCD test data - line 1
 str_tests_lcd_line2		da	"UVWXYZabcdefghijklmn\0"	; LCD test data - line 2

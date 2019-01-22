@@ -14,7 +14,7 @@ i2c_master_init
 								; SEN<0> START Condition Enable bit, idle
 
 	clrf	SSPSTAT						; SMP<7> Slew rate control enabled for high speed mode
-								; CKE<6> Data transmitted on rising edge of SCK
+								; CKE<6> Input levels conform to i2c specs
 								; D/A<5> Data/Address bit, cleared
 								; P<4> STOP bit, cleared
 								; S<3> START bit, cleared
@@ -28,6 +28,7 @@ i2c_master_init
 	bcf	PIE1,SSPIE					; Disable i2c interrupts
 
 	banksel	SSPCON
+	clrf	SSPCON						; Reset SSP module
 	movlw	0x28
 	movwf	SSPCON						; WCOL<7> Write Collision Detect bit, cleared
 								; SSPOV<6> SSP Overflow bit, cleared

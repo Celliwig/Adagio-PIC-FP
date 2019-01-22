@@ -75,46 +75,46 @@ screen_clear_loop
 
 	return
 
-;*******************************************************************
-; Write the screen buffer to the lcd
-screen_write_2_lcd
-	call	LCD_PORT_CONFIGURE
-
-	movlw	LCD_CMD_SET_DDRAM | SCR_ROW0 | SCR_COL0
-	call	LCD_WRITE_CMD
-
-	banksel	_mr_screen_buffer_line1
-	movlw	_mr_screen_buffer_line1
-	movwf	FSR
-	movlw	0x28					; We're writing 2 lines of data
-	movwf   _mr_screen_buffer_loop
-screen_write_2_lcd_lines13
-	movf	INDF, W
-	call	LCD_WRITE_DATA
-	incf	FSR, F
-	banksel	_mr_screen_buffer_loop
-	decfsz	_mr_screen_buffer_loop, F
-		goto	screen_write_2_lcd_lines13
-
-	movlw	LCD_CMD_SET_DDRAM | SCR_ROW1 | SCR_COL0
-	call	LCD_WRITE_CMD
-
-	banksel	_mr_screen_buffer_line2
-	movlw	_mr_screen_buffer_line2
-	movwf	FSR
-	movlw	0x28					; We're writing 2 lines of data
-	movwf   _mr_screen_buffer_loop
-screen_write_2_lcd_lines24
-	movf	INDF, W
-	call	LCD_WRITE_DATA
-	incf	FSR, F
-	banksel	_mr_screen_buffer_loop
-	decfsz	_mr_screen_buffer_loop, F
-		goto	screen_write_2_lcd_lines24
-
-	call	LCD_PORT_RESTORE
-
-	return
+;;*******************************************************************
+;; Write the screen buffer to the lcd
+;screen_write_2_lcd
+;	call	LCD_PORT_CONFIGURE
+;
+;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW0 | SCR_COL0
+;	call	LCD_WRITE_CMD
+;
+;	banksel	_mr_screen_buffer_line1
+;	movlw	_mr_screen_buffer_line1
+;	movwf	FSR
+;	movlw	0x28					; We're writing 2 lines of data
+;	movwf   _mr_screen_buffer_loop
+;screen_write_2_lcd_lines13
+;	movf	INDF, W
+;	call	LCD_WRITE_DATA
+;	incf	FSR, F
+;	banksel	_mr_screen_buffer_loop
+;	decfsz	_mr_screen_buffer_loop, F
+;		goto	screen_write_2_lcd_lines13
+;
+;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW1 | SCR_COL0
+;	call	LCD_WRITE_CMD
+;
+;	banksel	_mr_screen_buffer_line2
+;	movlw	_mr_screen_buffer_line2
+;	movwf	FSR
+;	movlw	0x28					; We're writing 2 lines of data
+;	movwf   _mr_screen_buffer_loop
+;screen_write_2_lcd_lines24
+;	movf	INDF, W
+;	call	LCD_WRITE_DATA
+;	incf	FSR, F
+;	banksel	_mr_screen_buffer_loop
+;	decfsz	_mr_screen_buffer_loop, F
+;		goto	screen_write_2_lcd_lines24
+;
+;	call	LCD_PORT_RESTORE
+;
+;	return
 
 ;;*******************************************************************
 ;; Draw a decorative border around the screen (lcd buffer)

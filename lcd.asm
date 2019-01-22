@@ -21,6 +21,8 @@ UF_IS_EDITABLE          equ     7
 UF_SELECT_NEXT          equ     0
 UF_SELECT_PREV          equ     1
 
+		org	LCD_BASE_ADDR
+
 ;*******************************************************************
 ; LCD_PORT_CONFIGURE
 ;
@@ -405,10 +407,15 @@ LCD_CLEAR_CHARS_LOOP
 ;
 LCD_WRITE_EEPROM_2_BUFFER
 	banksel	EEADR
-	movwf	EEADR			; Write EEPROM offset address
-	clrf	EEADRH			; Clear high address for EEPROM access
+	movwf	EEADR				; Write EEPROM offset address
+	clrf	EEADRH				; Clear high address for EEPROM access
 LCD_WRITE_EEPROM_2_BUFFER_READ
-	call	pic_eeprom_read
+	banksel	EECON1
+	bcf	EECON1, EEPGD			; Select EEPROM memory
+	bsf	EECON1, RD			; Start read operation
+	banksel	EEADR
+	incf	EEADR, F
+	movf	EEDATA, W			; Read data
 
 	btfsc   STATUS, Z
 		goto	LCD_WRITE_EEPROM_2_BUFFER_EXIT
@@ -418,3 +425,46 @@ LCD_WRITE_EEPROM_2_BUFFER_READ
 LCD_WRITE_EEPROM_2_BUFFER_EXIT
         return
 
+;*******************************************************************
+; LCD_UPDATE_FROM_SCREEN_BUFFER
+;
+; Write a screen buffer to the lcd
+;
+LCD_UPDATE_FROM_SCREEN_BUFFER
+	call	LCD_PORT_CONFIGURE
+
+	movlw	LCD_CMD_SET_DDRAM | SCR_ROW0 | SCR_COL0
+	call	LCD_WRITE_CMD
+
+	banksel	_mr_screen_buffer_line1
+	movlw	_mr_screen_buffer_line1
+	movwf	FSR
+	movlw	0x28					; We're writing 2 lines of data
+	movwf   _mr_screen_buffer_loop
+LCD_UPDATE_FROM_SCREEN_BUFFER_LINES13
+	movf	INDF, W
+	call	LCD_WRITE_DATA
+	incf	FSR, F
+	banksel	_mr_screen_buffer_loop
+	decfsz	_mr_screen_buffer_loop, F
+		goto	LCD_UPDATE_FROM_SCREEN_BUFFER_LINES13
+
+	movlw	LCD_CMD_SET_DDRAM | SCR_ROW1 | SCR_COL0
+	call	LCD_WRITE_CMD
+
+	banksel	_mr_screen_buffer_line2
+	movlw	_mr_screen_buffer_line2
+	movwf	FSR
+	movlw	0x28					; We're writing 2 lines of data
+	movwf   _mr_screen_buffer_loop
+LCD_UPDATE_FROM_SCREEN_BUFFER_LINES24
+	movf	INDF, W
+	call	LCD_WRITE_DATA
+	incf	FSR, F
+	banksel	_mr_screen_buffer_loop
+	decfsz	_mr_screen_buffer_loop, F
+		goto	LCD_UPDATE_FROM_SCREEN_BUFFER_LINES24
+
+	call	LCD_PORT_RESTORE
+
+	return

@@ -15,10 +15,10 @@ FP_CMD_WRITE_SCREEN		EQU	0x01
 ;---------------------------------------------------------------------
 ; Command status
 ;---------------------------------------------------------------------
-FP_CMD_STATUS_LOADING		EQU	0x00		; Started reading in a command
-FP_CMD_STATUS_LOADED		EQU	0x01		; Command has been read in
-FP_CMD_STATUS_PROCESSING	EQU	0x02		; Started processing command
-FP_CMD_STATUS_PROCESSED		EQU	0x03		; Command processed
+FP_CMD_STATUS_BIT_LOADING	EQU	0x00		; Started reading in a command
+FP_CMD_STATUS_BIT_LOADED	EQU	0x01		; Command has been read in
+FP_CMD_STATUS_BIT_PROCESSING	EQU	0x02		; Started processing command
+FP_CMD_STATUS_BIT_PROCESSED	EQU	0x03		; Command processed
 
 ;---------------------------------------------------------------------
 ; Screen postion byte
