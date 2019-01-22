@@ -722,6 +722,7 @@ mode_testfp_set
 mode_testfp_init
 	call	i2c_master_init
 	call	lcd_backlight_contrast_settings_restore
+	call	set_mpu_as_i2c_disabled
 	call	screen_clear					; Clear screen buffer
 	call	set_online_led_on
 	call	set_power_led_on
@@ -1815,6 +1816,22 @@ mode_powercontrol_control_exec_exit
 ;***********************************************************************
 ; General routines
 ;***********************************************************************
+
+;***********************************************************************
+; Disable the i2c interface
+set_mpu_as_i2c_disabled
+	banksel	SSPCON
+	clrf	SSPCON						; Disable SSP
+
+	bcf	PIR1, SSPIF					; Clear SSP interrupt
+
+	banksel	TRISC
+	bsf	TRISC, 0x03					; Set the ports as inputs
+	bsf	TRISC, 0x04
+
+	bcf	PIE1, SSPIE					; Disable SSP interrupt
+
+	return
 
 ;***********************************************************************
 ; Reset the i2c interface as a slave
