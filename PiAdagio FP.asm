@@ -7,6 +7,8 @@
 	include	"i2c.inc"
 	include "lcd.inc"
 ;	include "screen.inc"
+	include "commands.inc"
+	include "Charlies Front Panel.inc"
 
 ;	4 MHz ceramic resonator
 	__CONFIG _CP_OFF & _PWRTE_ON & _WDT_OFF & _XT_OSC & _LVP_ON
@@ -25,6 +27,8 @@
 ; Interrupt handler save registers
 		WREGsave,STATUSsave,FSRsave,PCLATHsave
 ; General registers
+		_mr_mode_cur,_mr_mode_prev
+		_mr_cmd_cur,_mr_cmd_prev
 		_mr_loop1,_mr_loop2
 		_mr_temp1,_mr_temp2
 		_mr_oldxtris,_mr_oldytris
@@ -78,21 +82,123 @@ ISR
 
 ;***********************************************************************
 main
-	CALL    init_mpu				; MPU Initialisation
-	CALL    init_board				; Hardware Initialisation
-	CALL    init_mem
-	CALL	set_mpu_as_i2c_slave			; Reset SSP as i2c slave and enable interrupts
-
-	CALL	screen_draw_border
+	call    init_mpu				; MPU Initialisation
+	call    init_board				; Hardware Initialisation
+	call    init_mem
 
 main_loop
-	CALL	READ_BUTTONS
+	call	read_buttons
+	call	buttons_2_command
 
-	CALL	fp_cmd_process
+main_loop_mode_poweroff
+	btfss	_mr_mode_cur, MODE_BIT_POWEROFF
+		goto	main_loop_mode_poweron
+; Power off section
+;***********************************************************************
+	banksel	_mr_mode_cur
+	movf	_mr_mode_cur, W
+	subwf	_mr_mode_prev, W
+	btfss	STATUS, Z				; Is this the first time through poweroff section
+		call	mode_poweroff_init		; then init
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, F
+	btfsc	STATUS, Z				; Check for a change of command state
+		goto	main_loop_mode_cont
+	sublw	CMD_POWER
+	btfsc	STATUS, Z				; Check for a power command
+		call	mode_poweron_set
+	movf	_mr_cmd_cur, W
+	sublw	CMD_TESTMODE
+	btfsc	STATUS, Z				; Check for a test mode command
+		call	mode_testfp_set
+	goto	main_loop_mode_cont
 
+main_loop_mode_poweron
+	btfss	_mr_mode_cur, MODE_BIT_POWERON
+		goto	main_loop_mode_testfp
+; Power on section
+;***********************************************************************
+	banksel	_mr_mode_cur
+	movf	_mr_mode_cur, W
+	subwf	_mr_mode_prev, W
+	btfss	STATUS, Z				; Is this the first time through poweron section
+		call	mode_poweron_init		; then init
+	call	fp_cmd_process				; Process any pending command
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, F
+	btfsc	STATUS, Z				; Check for a change of command state
+		goto	main_loop_mode_cont
+	sublw	CMD_POWER
+	btfsc	STATUS, Z				; Check for a power command
+		call	mode_poweroff_set
+	goto	main_loop_mode_cont
+
+main_loop_mode_testfp
+	btfss	_mr_mode_cur, MODE_BIT_TESTFP
+		goto	main_loop_mode_cont
+; Front panel test mode section
+;***********************************************************************
+	banksel	_mr_mode_cur
+	movf	_mr_mode_cur, W
+	subwf	_mr_mode_prev, W
+	btfss	STATUS, Z				; Is this the first time through testfp section
+		call	mode_testfp_init		; then init
+	call	fp_test_display_buttons
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, F
+	btfsc	STATUS, Z				; Check for a change of command state
+		goto	main_loop_mode_cont
+	sublw	CMD_TESTMODE
+	btfsc	STATUS, Z				; Check for a test mode command
+		call	mode_poweroff_set
+	goto	main_loop_mode_cont
+
+main_loop_mode_cont
+	movf	_mr_cmd_cur, W
+	movwf	_mr_cmd_prev
 	goto	main_loop
 
 ;***********************************************************************
+; Mode: Power Off
+;***********************************************************************
+mode_poweroff_set
+	banksel	_mr_mode_cur
+	movlw	MODE_POWEROFF
+	movwf	_mr_mode_cur
+	return
+
+mode_poweroff_init
+	call	LCD_CLEAR_SCREEN
+	call	set_online_led_off
+	call	set_power_led_off
+
+	banksel	_mr_mode_prev
+	movlw	MODE_POWEROFF
+	movwf	_mr_mode_prev
+	return
+
+;***********************************************************************
+; Mode: Power On
+;***********************************************************************
+mode_poweron_set
+	banksel	_mr_mode_cur
+	movlw	MODE_POWERON
+	movwf	_mr_mode_cur
+	return
+
+mode_poweron_init
+	call	set_power_led_on
+	call	set_mpu_as_i2c_slave				; Reset SSP as i2c slave and enable interrupts
+	call	screen_draw_border
+
+	banksel	_mr_mode_prev
+	movlw	MODE_POWERON
+	movwf	_mr_mode_prev
+	return
+
 ; Process command
 fp_cmd_process
 	bcf     INTCON,GIE					; Disable interrupts while we are processing
@@ -231,8 +337,20 @@ fp_cmd_process_write_screen_finish
 	GOTO fp_cmd_process
 
 ;***********************************************************************
-; Test modes
+; Mode: Test Mode
 ;***********************************************************************
+mode_testfp_set
+	banksel	_mr_mode_cur
+	movlw	MODE_TESTFP
+	movwf	_mr_mode_cur
+	return
+
+mode_testfp_init
+	banksel	_mr_mode_prev
+	movlw	MODE_TESTFP
+	movwf	_mr_mode_prev
+	return
+
 ; Display button values
 fp_test_display_buttons
 	CALL	LCD_PORT_CONFIGURE
@@ -254,6 +372,44 @@ fp_test_display_buttons
 	CALL	LCD_PORT_RESTORE
 
 	RETURN
+
+;***********************************************************************
+; General routines
+;***********************************************************************
+
+;***********************************************************************
+; Reset the i2c interface as a slave
+set_mpu_as_i2c_slave
+	clrf	PIR1			; Clear interrupt flag
+	call	i2c_slave_init
+
+	bsf	INTCON,PEIE 		; Enable all peripheral interrupts
+	bsf	INTCON,GIE		; Enable global interrupts
+	return
+
+;***********************************************************************
+; Set Power LED state (W)
+set_power_led_off
+	banksel	PORTE
+	bcf     PORTE, 0x2                              ; Extinguish 'power' LED
+	return
+
+set_power_led_on
+	banksel	PORTE
+	bsf     PORTE, 0x2                              ; Light 'power' LED
+	return
+
+;***********************************************************************
+; Set Online LED state (W)
+set_online_led_off
+	banksel	PORTC
+	bcf     PORTC, 0x1                              ; Extinguish 'online' LED
+	return
+
+set_online_led_on
+	banksel	PORTC
+	bsf     PORTC, 0x1                              ; Light 'online' LED
+	return
 
 ;***********************************************************************
 ; Initialisation routines
@@ -353,7 +509,7 @@ init_mpu_configure_ports
 ;	CALL    i2c_master_start
 ;	CALL    i2c_master_stop
 
-	BSF     PORTC, 0x1				; Light 'online' LED
+	call	set_online_led_on
 
 	MOVLW   0x32
 	MOVWF   0x66					; Setup loop counter
@@ -363,7 +519,7 @@ init_mpu_l1
 	DECFSZ  0x66, 0x1
 	GOTO    init_mpu_l1
 
-	BCF     PORTC, 0x1				; Extinguish 'online' LED
+	call	set_online_led_off
 
 	return
 
@@ -429,6 +585,10 @@ init_mem
 	clrf	_mr_lcd_screen_pos
 	clrf	_mr_lcd_clear_chars
 
+	clrf	_mr_mode_prev
+	movlw	MODE_POWEROFF				; Set the current mode
+	movwf	_mr_mode_cur
+
 	movlw	0x03					; Setup command, screen write 'System booting'
 	movwf	_mr_i2c_cmd_status
 	movlw	0x10
@@ -469,16 +629,6 @@ init_mem
 	return
 
 ;***********************************************************************
-; Reset the i2c interface as a slave
-set_mpu_as_i2c_slave
-	clrf	PIR1			; Clear interrupt flag
-	call	i2c_slave_init
-
-	bsf	INTCON,PEIE 		; Enable all peripheral interrupts
-	bsf	INTCON,GIE		; Enable global interrupts
-	return
-
-;***********************************************************************
 ; this function looks like it just wastes machine cycles (Old Code)
 waste_time
 	movlw   0x0c
@@ -503,16 +653,12 @@ waste_time_l1
 	include "i2c_slave.asm"
 	include "lcd.asm"
 	include	"screen.asm"
+	include "commands.asm"
 
         END
 
 
 ;# Function
-;2000:  3fff  dw      0x3fff
-;2001:  3fff  dw      0x3fff
-;2002:  3fff  dw      0x3fff
-;2003:  3fff  dw      0x3fff
-;2007:  3ff5  dw      0x3ff5
 ;2100:  01    db      0x01
 ;2101:  00    db      0x00
 ;2102:  ff    db      0xff

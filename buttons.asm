@@ -1,3 +1,4 @@
+;***********************************************************************
 ; Read the front panel buttons
 ; Select RC2:
 ;	Pause (SW16): RD7
@@ -22,24 +23,52 @@
 ; Select RB2:
 ;	Right (SW18): RD1
 ;	Up (SW17): RD0
-
 ; PortD pulled high, so the bank select line goes low
+;***********************************************************************
 
-READ_BUTTONS
+;***********************************************************************
+; PortD bit associated with each switch
+;***********************************************************************
+BUTTON_BIT_RC2_PWR	EQU	0
+BUTTON_BIT_RC2_PLAY	EQU	1
+BUTTON_BIT_RC2_LEFT	EQU	2
+BUTTON_BIT_RC2_CDHD	EQU	3
+BUTTON_BIT_RC2_DSP2	EQU	4
+BUTTON_BIT_RC2_DOWN	EQU	5
+BUTTON_BIT_RC2_SLCT	EQU	6
+BUTTON_BIT_RC2_PAUS	EQU	7
+
+BUTTON_BIT_RB1_PREV	EQU	0
+BUTTON_BIT_RB1_DSP4	EQU	1
+BUTTON_BIT_RB1_DSP3	EQU	2
+BUTTON_BIT_RB1_MODE	EQU	3
+BUTTON_BIT_RB1_NEXT	EQU	4
+BUTTON_BIT_RB1_STOP	EQU	5
+BUTTON_BIT_RB1_DSP1	EQU	6
+BUTTON_BIT_RB1_EJCT	EQU	7
+
+BUTTON_BIT_RB2_UP	EQU	0
+BUTTON_BIT_RB2_RGHT	EQU	1
+
+;***********************************************************************
+; Read switch arrays into button buffers
+;***********************************************************************
+read_buttons
 	bsf	STATUS, RP0
+	bcf	STATUS, RP1
 	movf	TRISD, W
 	movwf	_mr_oldxtris			; Save the TRISD state
-	MOVLW	0xFF
+	movlw	0xFF
 	movwf	TRISD				; Set PortD to all inputs
 	bcf	STATUS, RP0
 
-	call	READ_BUTTONS_RB1		; Read bank 1
+	call	read_buttons_RB1		; Read bank 1
 	movwf	_mr_button_bank
 
-	call	READ_BUTTONS_RB2		; Read bank 2
+	call	read_buttons_RB2		; Read bank 2
 	movwf	(_mr_button_bank + 1)
 
-	call	READ_BUTTONS_RC2		; Read bank 3
+	call	read_buttons_RC2		; Read bank 3
 	movwf	(_mr_button_bank + 2)
 
 	bsf	STATUS, RP0
@@ -49,7 +78,10 @@ READ_BUTTONS
 
 	return
 
-READ_BUTTONS_RB1
+;***********************************************************************
+; Read the switch array selected by RB1
+;***********************************************************************
+read_buttons_RB1
 	bsf	STATUS, RP0
 	bcf     TRISB, 0x1			; Set as Output
 	bcf	STATUS, RP0
@@ -64,7 +96,10 @@ READ_BUTTONS_RB1
 
 	return
 
-READ_BUTTONS_RB2
+;***********************************************************************
+; Read the switch array selected by RB2
+;***********************************************************************
+read_buttons_RB2
 	bsf	STATUS, RP0
 	bcf     TRISB, 0x2			; Set as Output
 	bcf	STATUS, RP0
@@ -79,7 +114,10 @@ READ_BUTTONS_RB2
 
 	return
 
-READ_BUTTONS_RC2
+;***********************************************************************
+; Read the switch array selected by RC2
+;***********************************************************************
+read_buttons_RC2
 	bsf	STATUS, RP0
 	bcf     TRISC, 0x2			; Set as Output
 	bcf	STATUS, RP0

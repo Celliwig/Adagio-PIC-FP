@@ -1,0 +1,35 @@
+;***********************************************************************
+; List of command values
+;***********************************************************************
+
+CMD_NONE	EQU	0x00
+
+; GENERAL
+CMD_POWER	EQU	0x01
+CMD_TESTMODE	EQU	0x02
+CMD_MODE	EQU	0x03
+CMD_CDHD	EQU	0x04
+CMD_EJECT	EQU	0x05
+
+; Transport
+CMD_PLAY	EQU	0x11
+CMD_STOP	EQU	0x12
+CMD_PAUSE	EQU	0x13
+CMD_PREVIOUS	EQU	0x14
+CMD_REWIND	EQU	0x15
+CMD_NEXT	EQU	0x16
+CMD_FASTFOWARD	EQU	0x17
+
+; Navigation
+CMD_UP		EQU	0x21
+CMD_DOWN	EQU	0x22
+CMD_LEFT	EQU	0x23
+CMD_RIGHT	EQU	0x24
+CMD_SELECT	EQU	0x25
+CMD_BACK	EQU	0x26
+
+; Display Select
+CMD_DSPSEL1	EQU	0x31
+CMD_DSPSEL2	EQU	0x32
+CMD_DSPSEL3	EQU	0x33
+CMD_DSPSEL4	EQU	0x34
