@@ -33,6 +33,7 @@
 		_mr_mode_cur,_mr_mode_prev
 		_mr_cmd_cur,_mr_cmd_prev
 		_mr_test_select						; [7] run test, [6-0] test number
+		_mr_pwrctrl_select
 		_mr_loop1,_mr_loop2
 		_mr_temp
 ; Button registers
@@ -56,7 +57,7 @@
 ; General registers
 		_mr_oldxtris,_mr_oldytris				; Old TRIS values
 ; Screen buffer registers
-		_mr_screen_buffer_update
+		_mr_screen_buffer_update				; <0> Update screen, <1> Disable screen update
 		_mr_screen_buffer_loop
 		_mr_screen_buffer_temp
 		_mr_screen_buffer_line1: LCD_LINE_LENGTH		; Screen buffer
@@ -99,8 +100,7 @@ ISR_Tmr2_int
 		goto	ISR_Tmr1_int		; If not go to next check
 	bcf	PIR1, TMR2IF			; Otherwise, clear the interrupt flag
 	banksel	_mr_screen_buffer_update
-	movlw	0x1
-	movwf	_mr_screen_buffer_update	; And mark the LCD for update
+	bsf	_mr_screen_buffer_update, 0x0	; And mark the LCD for update
 	goto	ISR_exit
 
 ISR_Tmr1_int
@@ -154,12 +154,13 @@ main_loop
 
 main_loop_update_lcd
 	banksel	_mr_screen_buffer_update
-	movf	_mr_screen_buffer_update, F
-	btfsc	STATUS, Z				; Check if there is a pending LCD update
+	btfss	_mr_screen_buffer_update, 0x0		; Is there a screen update pending
+		goto	main_loop_read_inputs
+	btfsc	_mr_screen_buffer_update, 0x1		; Is the screen update disabled
 		goto	main_loop_read_inputs
 	call	screen_write_2_lcd			; Write screen buffer to LCD
 	banksel	_mr_screen_buffer_update
-	clrf	_mr_screen_buffer_update		; Clear LCD update flag
+	bcf	_mr_screen_buffer_update, 0x0		; Clear screen update flag
 
 main_loop_read_inputs
 	movlw	0x0f					; Select high address (includes the required offset for the add in the routine)
@@ -229,7 +230,7 @@ main_loop_mode_poweron
 		goto	main_loop_mode_cont
 	sublw	CMD_POWER
 	btfsc	STATUS, Z				; Check for a power command
-		call	mode_poweroff_set
+		call	mode_powercontrol_set
 	goto	main_loop_mode_cont
 
 ;***********************************************************************
@@ -239,7 +240,7 @@ main_loop_mode_poweron
 ;***********************************************************************
 main_loop_mode_testfp
 	btfss	_mr_mode_cur, MODE_BIT_TESTFP
-		goto	main_loop_mode_cont
+		goto	main_loop_mode_powercontrol
 ; Front panel test mode section
 ;***********************************************************************
 	banksel	_mr_mode_cur
@@ -307,7 +308,7 @@ main_loop_mode_testfp_process_cmd_up
 	btfss	STATUS, Z
 		goto	main_loop_mode_testfp_process_cmd_down
 	btfss	_mr_test_select, 7
-		call	mode_testfp_dec_select_test
+		call	mode_testfp_dec_selected_test
 	goto	main_loop_mode_cont
 main_loop_mode_testfp_process_cmd_down
 	movf	_mr_cmd_cur, W
@@ -315,7 +316,7 @@ main_loop_mode_testfp_process_cmd_down
 	btfss	STATUS, Z
 		goto	main_loop_mode_testfp_process_cmd_left
 	btfss	_mr_test_select, 7
-		call	mode_testfp_inc_select_test
+		call	mode_testfp_inc_selected_test
 	goto	main_loop_mode_cont
 main_loop_mode_testfp_process_cmd_left
 	movf	_mr_cmd_cur, W
@@ -342,7 +343,52 @@ main_loop_mode_testfp_process_cmd_select
 main_loop_mode_testfp_process_cmd_pfinish
 	goto	main_loop_mode_cont
 
+;***********************************************************************
+;***********************************************************************
+; Main: Power Control
+;***********************************************************************
+;***********************************************************************
+main_loop_mode_powercontrol
+	btfss	_mr_mode_cur, MODE_BIT_POWERCTRL
+		goto	main_loop_mode_cont
+; Power control section
+;***********************************************************************
+	banksel	_mr_mode_cur
+	movf	_mr_mode_cur, W
+	subwf	_mr_mode_prev, W
+	btfss	STATUS, Z				; Is this the first time through power control section
+		call	mode_powercontrol_init		; then init
+	call	fp_cmd_process				; Keep processing commands
+	call	mode_powercontrol_update_display	; Update display
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, F
+	btfsc	STATUS, Z				; Check for a change of command state
+		goto	main_loop_mode_cont
+main_loop_mode_powercontrol_process_cmd_pwr
+	sublw	CMD_POWER
+	btfsc	STATUS, Z				; Check for a power command
+		call	mode_powercontrol_back_2_poweron
+main_loop_mode_powercontrol_process_cmd_select
+	movf	_mr_cmd_cur, W
+	sublw	CMD_SELECT
+	btfsc	STATUS, Z				; Check for a select command
+		call	mode_powercontrol_control_exec
+main_loop_mode_powercontrol_process_cmd_up
+	movf	_mr_cmd_cur, W
+	sublw	CMD_UP
+	btfsc	STATUS, Z
+		call	mode_powercontrol_dec_selected_pwrctrl
+main_loop_mode_powercontrol_process_cmd_down
+	movf	_mr_cmd_cur, W
+	sublw	CMD_DOWN
+	btfsc	STATUS, Z
+		call	mode_powercontrol_inc_selected_pwrctrl
+main_loop_mode_powercontrol_exit
+	goto	main_loop_mode_cont
+
 main_loop_mode_cont
+	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, W
 	movwf	_mr_cmd_prev
 	goto	main_loop
@@ -564,32 +610,32 @@ mode_testfp_init
 	return
 
 ;***********************************************************************
-; mode_testfp_inc_select_test
+; mode_testfp_inc_selected_test
 ;
 ; Increments the selected test
 ;
-mode_testfp_inc_select_test
+mode_testfp_inc_selected_test
 	incf	_mr_test_select, F
 	movf	_mr_test_select, W
 	sublw	TESTFP_NUM_TESTS - 1		; Subtract W from (TESTFP_NUM_TESTS - 1)
 	btfsc	STATUS, C			; Check if the results is negative
-		goto	mode_testfp_inc_select_test_exit
+		goto	mode_testfp_inc_selected_test_exit
 	movlw	TESTFP_NUM_TESTS - 1
 	movwf	_mr_test_select
-mode_testfp_inc_select_test_exit
+mode_testfp_inc_selected_test_exit
 	return
 
 ;***********************************************************************
-; mode_testfp_dec_select_test
+; mode_testfp_dec_selected_test
 ;
 ; Decrements the selected test
 ;
-mode_testfp_dec_select_test
+mode_testfp_dec_selected_test
 	movf	_mr_test_select, W
 	btfsc	STATUS, Z
-		goto	mode_testfp_dec_select_test_exit
+		goto	mode_testfp_dec_selected_test_exit
 	decf	_mr_test_select, F
-mode_testfp_dec_select_test_exit
+mode_testfp_dec_selected_test_exit
 	return
 
 ;***********************************************************************
@@ -1047,17 +1093,181 @@ mode_testfp_test_i2c
 	return
 
 ;***********************************************************************
+; Mode: Power Control
+;***********************************************************************
+mode_powercontrol_set
+	banksel	_mr_mode_cur
+	movlw	MODE_POWERCTRL
+	movwf	_mr_mode_cur
+	return
+
+mode_powercontrol_init
+	banksel	_mr_pwrctrl_select
+	movlw	0x01
+	movwf	_mr_pwrctrl_select
+
+	banksel	_mr_screen_buffer_update
+	bsf	_mr_screen_buffer_update, 0x1			; Disable screen updates from buffer
+
+	call	LCD_PORT_CONFIGURE
+
+	call	LCD_CLEAR_SCREEN				; Clear screen
+
+	call	LCD_PORT_RESTORE
+
+	banksel	_mr_mode_prev
+	movlw	MODE_POWERCTRL
+	movwf	_mr_mode_prev
+	return
+
+;***********************************************************************
+; mode_powercontrol_update_display
+;
+; Updates the display to indicate the selected power control.
+;
+mode_powercontrol_update_display
+	banksel	_mr_screen_buffer_update
+	btfss	_mr_screen_buffer_update, 0x0			; Check if the lcd should be updated
+		goto	mode_powercontrol_update_display_exit
+	bcf	_mr_screen_buffer_update, 0x0
+
+	call	LCD_PORT_CONFIGURE
+
+; Shutdown
+	movlw	(LCD_CMD_SET_DDRAM | SCR_ROW0 | SCR_COL0) + 3
+	call	LCD_WRITE_CMD
+	banksel	_mr_pwrctrl_select
+	movlw	' '
+	btfsc	_mr_pwrctrl_select, 0x0
+		movlw	'>'
+	call	LCD_WRITE_DATA
+	movlw	' '
+	call	LCD_WRITE_DATA
+	movlw	eeprom_str_shutdown - 0x2100
+	call	LCD_WRITE_EEPROM_2_BUFFER
+
+; Reset
+	movlw	(LCD_CMD_SET_DDRAM | SCR_ROW1 | SCR_COL0) + 3
+	call	LCD_WRITE_CMD
+	banksel	_mr_pwrctrl_select
+	movlw	' '
+	btfsc	_mr_pwrctrl_select, 0x1
+		movlw	'>'
+	call	LCD_WRITE_DATA
+	movlw	' '
+	call	LCD_WRITE_DATA
+	movlw	eeprom_str_reset - 0x2100
+	call	LCD_WRITE_EEPROM_2_BUFFER
+
+; Power Off
+	movlw	(LCD_CMD_SET_DDRAM | SCR_ROW2 | SCR_COL0) + 3
+	call	LCD_WRITE_CMD
+	banksel	_mr_pwrctrl_select
+	movlw	' '
+	btfsc	_mr_pwrctrl_select, 0x2
+		movlw	'>'
+	call	LCD_WRITE_DATA
+	movlw	' '
+	call	LCD_WRITE_DATA
+	movlw	eeprom_str_poweroff - 0x2100
+	call	LCD_WRITE_EEPROM_2_BUFFER
+
+	call	LCD_PORT_RESTORE
+
+mode_powercontrol_update_display_exit
+	return
+
+;***********************************************************************
+; mode_powercontrol_inc_selected_pwrctrl
+;
+; Increments the selected power control
+;
+mode_powercontrol_inc_selected_pwrctrl
+	bcf	STATUS, C
+	rlf	_mr_pwrctrl_select, F
+	btfss	_mr_pwrctrl_select, PWRCTRL_NUM_CONTROLS
+		goto	mode_powercontrol_inc_selected_pwrctrl_exit
+	movlw	(1<<(PWRCTRL_NUM_CONTROLS - 1))
+	movwf	_mr_pwrctrl_select
+mode_powercontrol_inc_selected_pwrctrl_exit
+	return
+
+;***********************************************************************
+; mode_powercontrol_dec_selected_pwrctrl
+;
+; Decrements the selected power control
+;
+mode_powercontrol_dec_selected_pwrctrl
+	bcf	STATUS, C
+	rrf	_mr_pwrctrl_select, F
+	btfss	STATUS, C
+		goto	mode_powercontrol_dec_selected_pwrctrl_exit
+	movlw	0x1
+	movwf	_mr_pwrctrl_select
+mode_powercontrol_dec_selected_pwrctrl_exit
+	return
+
+;***********************************************************************
+; mode_powercontrol_back_2_poweron
+;
+; Restores mode to Power-On
+;
+mode_powercontrol_back_2_poweron
+	banksel	_mr_mode_cur
+	movlw	MODE_POWERON
+	movwf	_mr_mode_cur					; Reset current mode, back to Power On
+	movwf	_mr_mode_prev					; Updated to avoid the init routine
+
+	banksel	_mr_screen_buffer_update
+	bcf	_mr_screen_buffer_update, 0x1			; Enable screen updates
+
+	return
+
+;***********************************************************************
+; mode_powercontrol_control_exec
+;
+; Runs the power control
+;
+mode_powercontrol_control_exec
+	banksel	_mr_pwrctrl_select
+
+mode_powercontrol_control_exec_shutdown
+	btfss	_mr_pwrctrl_select, 0x0
+		goto	mode_powercontrol_control_exec_reset
+	call	ctrl_rpi_shutdown
+	call	mode_powercontrol_back_2_poweron
+	goto	mode_powercontrol_control_exec_exit
+
+mode_powercontrol_control_exec_reset
+	btfss	_mr_pwrctrl_select, 0x1
+		goto	mode_powercontrol_control_exec_poweroff
+	call	ctrl_rpi_reset
+	call	mode_powercontrol_back_2_poweron
+	goto	mode_powercontrol_control_exec_exit
+
+mode_powercontrol_control_exec_poweroff
+	btfss	_mr_pwrctrl_select, 0x2
+		goto	mode_powercontrol_control_exec_exit
+	call	mode_poweroff_set
+	banksel	_mr_screen_buffer_update
+	bcf	_mr_screen_buffer_update, 0x1			; Enable screen updates
+	goto	mode_powercontrol_control_exec_exit
+
+mode_powercontrol_control_exec_exit
+	return
+
+;***********************************************************************
 ; General routines
 ;***********************************************************************
 
 ;***********************************************************************
 ; Reset the i2c interface as a slave
 set_mpu_as_i2c_slave
-	clrf	PIR1			; Clear interrupt flag
+	clrf	PIR1						; Clear interrupt flag
 	call	i2c_slave_init
 
-	bsf	INTCON,PEIE 		; Enable all peripheral interrupts
-	bsf	INTCON,GIE		; Enable global interrupts
+	bsf	INTCON,PEIE 					; Enable all peripheral interrupts
+	bsf	INTCON,GIE					; Enable global interrupts
 	return
 
 ;***********************************************************************
@@ -1084,7 +1294,7 @@ ctrl_rpi_reset
 	bcf	PORTA, 0x05
 	banksel	TRISA
 	bcf	TRISA, 0x05
-	nop				; NOPs should provide sufficient delay
+	nop							; NOPs should provide sufficient delay
 	nop
 	bsf	TRISA, 0x05
 	return
@@ -1095,7 +1305,7 @@ ctrl_rpi_reset
 ctrl_rpi_shutdown
 	banksel	PORTB
 	bsf	PORTB, 0x07
-	nop				; NOPs should provide sufficient delay
+	nop							; NOPs should provide sufficient delay
 	nop
 	bcf	PORTB, 0x07
 	return
@@ -1246,6 +1456,7 @@ init_mem
 	movwf	_mr_mode_cur
 
 	clrf	_mr_test_select					; Test mode, selected test
+	clrf	_mr_pwrctrl_select				; Power control, selected shutdown method
 
 	banksel	_mr_screen_buffer_update
 	clrf	_mr_screen_buffer_update			; Clear screen buffer related registers

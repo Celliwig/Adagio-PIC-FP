@@ -1,3 +1,5 @@
+#define	PWRCTRL_NUM_CONTROLS	0x3				; Number of power controls
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Modes selection bits
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -5,6 +7,7 @@
 #define MODE_BIT_POWEROFF	0
 #define MODE_BIT_POWERON	1
 #define MODE_BIT_TESTFP		2
+#define MODE_BIT_POWERCTRL	3
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Mode values
@@ -13,6 +16,7 @@
 #define	MODE_POWEROFF		(1<<MODE_BIT_POWEROFF)
 #define	MODE_POWERON		(1<<MODE_BIT_POWERON)
 #define	MODE_TESTFP		(1<<MODE_BIT_TESTFP)
+#define	MODE_POWERCTRL		(1<<MODE_BIT_POWERCTRL)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Test mode values

@@ -166,17 +166,28 @@ LCD_DELAY_LOOP
 ; to be written (that is if data is to be written). The contents of the LCD port
 ; while E is active are returned in W.
 ;
+; Code LCD_DROP_E & LCD_RAISE_E repeated here as this will save stack space.
+;
 ; Registers used:
 ;	W (used to return lcd data)
 ;
 LCD_TOGGLE_E
 	banksel	LCD_CONTROL_PORT
 
-	call	LCD_DROP_E			; Make sure E is low
+	bcf	LCD_CONTROL_PORT, LCD_E		; Make sure E is low
+	nop					; Delays needed primarily for 10Mhz and faster clocks
+;	nop
+;	nop
+;	nop
 LCD_LTE1:
 	btfsc	LCD_CONTROL_PORT, LCD_E		; E is low the first time through the loop
 		goto	LCD_LTE2
-	call	LCD_RAISE_E			; Make E high and go through the loop again
+
+	bsf	LCD_CONTROL_PORT, LCD_E		; Make sure E is high
+	nop					; Delays needed primarily for 10Mhz and faster clocks
+;	nop
+;	nop
+;	nop
 	goto	LCD_LTE1
 LCD_LTE2:
 	movf	LCD_DATA_PORT, W		; Read the LCD Data bus
@@ -385,3 +396,29 @@ LCD_CLEAR_CHARS_LOOP
 	decfsz	_mr_lcd_loop, F
 		goto	LCD_CLEAR_CHARS_LOOP
 	return
+
+;*******************************************************************
+; LCD_WRITE_EEPROM_2_BUFFER
+;
+; Copies a zero terminated string from the EEPROM to the LCD.
+; W register points to the offset in ROM.
+;
+LCD_WRITE_EEPROM_2_BUFFER
+	banksel	EEADR
+	movwf	EEADR			; Write EEPROM offset address
+LCD_WRITE_EEPROM_2_BUFFER_READ
+	banksel	EECON1
+	bcf	EECON1, EEPGD		; Select EEPROM memory
+	bsf	EECON1, RD		; Start read operation
+	banksel	EEADR
+	incf	EEADR, F
+	movf	EEDATA, W		; Read data
+
+	btfsc   STATUS, Z
+		goto	LCD_WRITE_EEPROM_2_BUFFER_EXIT
+	call	LCD_WRITE_DATA
+	goto	LCD_WRITE_EEPROM_2_BUFFER_READ
+
+LCD_WRITE_EEPROM_2_BUFFER_EXIT
+        return
+
