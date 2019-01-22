@@ -1356,8 +1356,8 @@ mode_testfp_test_pwr_cntrls_shutdown_value
 	movlw	_mr_screen_buffer_line3 + 17
 	movwf	FSR
 	clrw
-	banksel	PORTB
-	btfsc	PORTB, 0x7
+	banksel	TRISB
+	btfsc	TRISB, 0x7
 		movlw	0x1
 	call	screen_write_byte_as_hex
 
@@ -1787,8 +1787,7 @@ mode_powercontrol_control_exec_shutdown
 	btfss	_mr_pwrctrl_select, 0x0
 		goto	mode_powercontrol_control_exec_reset
 	call	ctrl_rpi_shutdown_active
-	nop							; NOPs to add a delay
-	nop
+	call	waste_time_256_x_96				; Need to delay for longer than the 5ms debounce on gpio-keys
 	call	ctrl_rpi_shutdown_clear
 	call	mode_powercontrol_back_2_poweron
 	goto	mode_powercontrol_control_exec_exit
@@ -1797,8 +1796,7 @@ mode_powercontrol_control_exec_reset
 	btfss	_mr_pwrctrl_select, 0x1
 		goto	mode_powercontrol_control_exec_poweroff
 	call	ctrl_rpi_reset_active
-	nop							; NOPs to add a delay
-	nop
+	call	waste_time_256_x_96
 	call	ctrl_rpi_reset_clear
 	call	mode_powercontrol_back_2_poweron
 	goto	mode_powercontrol_control_exec_exit
@@ -2129,7 +2127,7 @@ init_mpu
 	movwf	_mr_temp				; Setup loop counter
 init_mpu_led_loop
 	clrwdt
-	call	waste_time
+	call	waste_time_256_x_48
 	decfsz	_mr_temp, F
 		goto	init_mpu_led_loop
 
@@ -2200,22 +2198,29 @@ init_board
 	return
 
 ;***********************************************************************
-; this function looks like it just wastes machine cycles (Old Code)
-waste_time
-	movlw   0x0c
-	movwf   _mr_loop1				; _mr_loop1 = 12
-	goto    waste_time_j1
+waste_time_256_x_96					; Approx 20ms
+	banksel	_mr_loop1
+	movlw   0x60
+	movwf   _mr_loop1				; _mr_loop1 = 96
+	goto    waste_time_256_x
+waste_time_256_x_48					; Approx 10ms
+	banksel	_mr_loop1
+	movlw   0x30
+	movwf   _mr_loop1				; _mr_loop1 = 48
+	goto    waste_time_256_x
+waste_time_256_x_1
+	banksel	_mr_loop1
 	movlw   0x01
 	movwf   _mr_loop1				; _mr_loop1 = 01
-	goto    waste_time_j1
-waste_time_j1
+	goto    waste_time_256_x
+waste_time_256_x
 	movlw   0x00
 	movwf   _mr_loop2				; _mr_loop2 = 0
-waste_time_l1
+waste_time_loop
 	decfsz  _mr_loop2, 0x1
-	goto    waste_time_l1
+	goto    waste_time_loop
 	decfsz  _mr_loop1, 0x1
-	goto    waste_time_l1
+	goto    waste_time_loop
 	return
 
 	include "buttons.asm"
