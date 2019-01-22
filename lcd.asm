@@ -109,16 +109,19 @@ lcd_init_8bit:
 	decfsz	_mr_lcd_loop, F
 	goto	lcd_init_8bit
 
-	movlw	LCD_CMD_FUNC_SET | LCD_8bit_MODE | LCD_2_LINES | LCD_SMALL_FONT
+; If this is an OLED display, make sure to turn on DC/DC PSU and select character mode
+IFDEF	OLED_DISPLAY
+	movlw	LCD_CMD_FUNC_SET | LCD_8bit_MODE | LCD_2_LINES | LCD_SMALL_FONT | LCD_FONT_WESTERN_EUROPEAN2
 	call	LCD_WRITE_CMD
 
-	; If this is an OLED display, make sure to turn on DC/DC PSU and select character mode
-	IFDEF	OLED_DISPLAY
 	banksel	_mr_lcd_module_state
 	bsf	_mr_lcd_module_state, 1
 	movlw	LCD_CMD_MODEPWR_CTRL | LCD_MODE_CHAR | LCD_DCDC_ON
 	call	LCD_WRITE_CMD
-	ENDIF
+ELSE
+	movlw	LCD_CMD_FUNC_SET | LCD_8bit_MODE | LCD_2_LINES | LCD_SMALL_FONT
+	call	LCD_WRITE_CMD
+ENDIF
 
 	; Turn on the display and turn off the cursor. Set the cursor to the non-blink mode
 	banksel	_mr_lcd_module_state

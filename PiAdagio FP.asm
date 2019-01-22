@@ -75,6 +75,7 @@
 		_mr_lcd_loop
 		_mr_lcd_temp
 		_mr_lcd_delayloop1, _mr_lcd_delayloop2
+		_mr_lcd_module_state
 	endc
 
 ; processor reset vector
@@ -483,9 +484,17 @@ mode_poweroff_init
 	call	set_psu_off
 	call	set_online_led_off
 	call	screen_clear					; Clear screen buffer
+
 	call	i2c_master_init					; Need the PSU off to become master
+IFNDEF	OLED_DISPLAY
 ;	call	lcd_backlight_contrast_settings_save_then_clear
 	call	lcd_backlight_contrast_settings_clear
+ENDIF
+
+	movlw	(LCD_BASE_ADDR>>8)				; Select high address
+	movwf	PCLATH						; For the next 'call'
+	call	LCD_CTRL_DISPLAY_OFF				; Disable display (power saving)
+	clrf	PCLATH
 
 	banksel	_mr_mode_prev
 	movlw	MODE_POWEROFF
@@ -503,19 +512,27 @@ mode_poweron_set
 
 mode_poweron_init
 	call	i2c_master_init
+IFNDEF	OLED_DISPLAY
 	call	lcd_backlight_contrast_settings_restore		; Restore before we become a slave
+ENDIF
+
+	movlw	(LCD_BASE_ADDR>>8)				; Select high address
+	movwf	PCLATH						; For the next 'call'
+	call	LCD_CTRL_DISPLAY_ON				; Enable display
+	clrf	PCLATH
+
 	call	set_online_led_off
 	call	set_mpu_as_i2c_slave				; Reset SSP as i2c slave and enable interrupts
 	call	set_psu_on
 
-	call	screen_draw_border				; Draw a border in the screen buffer
+;	call	screen_draw_border				; Draw a border in the screen buffer
 
 	movlw	_mr_screen_buffer_line2 + 3			; Write 'PiAdagio Sound' in the screen buffer (line 2)
 	movwf	FSR
 	movlw	str_panel_title1 - STRINGS_BASE_ADDR
 	call	screen_write_flash_str_2_buffer
 
-	movlw	_mr_screen_buffer_line3 + 7			; Write 'Server' in the screen buffer (line 3)
+	movlw	_mr_screen_buffer_line3 + 7			; Write 'System' in the screen buffer (line 3)
 	movwf	FSR
 	movlw	str_panel_title2 - STRINGS_BASE_ADDR
 	call	screen_write_flash_str_2_buffer
@@ -745,7 +762,15 @@ mode_testfp_set
 ;
 mode_testfp_init
 	call	i2c_master_init
+IFNDEF	OLED_DISPLAY
 	call	lcd_backlight_contrast_settings_restore
+ENDIF
+
+	movlw	(LCD_BASE_ADDR>>8)				; Select high address
+	movwf	PCLATH						; For the next 'call'
+	call	LCD_CTRL_DISPLAY_ON				; Enable display
+	clrf	PCLATH
+
 	call	set_mpu_as_i2c_disabled
 	call	screen_clear					; Clear screen buffer
 	call	set_online_led_on
