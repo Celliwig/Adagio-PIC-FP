@@ -13,9 +13,7 @@ LOADFSR macro 	ADDRESS, INDEX 					; ADDRESS = I2C_ARRAY, INDEX = _mr_i2c_buffer
 ; Initializes program variables and peripheral registers.
 ;---------------------------------------------------------------------
 i2c_slave_init
-	bsf	STATUS, RP0
-	bcf	STATUS, RP1
-
+	banksel	TRISC
 	bsf     TRISC, 0x03
 	bsf     TRISC, 0x04
 	movlw   NODE_ADDR
@@ -24,9 +22,7 @@ i2c_slave_init
 	bsf     SSPSTAT, 0x07					; Slew rate control disabled for standard speed mode (100 kHz and 1 MHz)
 	bsf     PIE1,SSPIE
 
-	bcf	STATUS, RP0
-	bcf	STATUS, RP1
-
+	banksel	SSPCON
 	movlw   0x36						; Setup SSP module for 7-bit
 	movwf   SSPCON						; address, slave mode
 
@@ -36,24 +32,22 @@ i2c_slave_init
 ; i2c slave Interrupt Service Routine (ISR)
 ;-----------------------------------------------------------------------------------------------
 i2c_slave_ssp_handler
-	bcf	STATUS, RP0
-	bcf	STATUS, RP1
+	banksel	PIR1
 	btfss 	PIR1, SSPIF 					; Is this a SSP interrupt?
 		goto 	i2c_slave_ssp_handler_bus_coll 		; if not, bus collision int occurred (does this occur in slave mode?)
-	bsf	STATUS, RP0
+
+	banksel	SSPSTAT
 	btfsc	SSPSTAT, 2					; is it a master read:
 		goto	i2c_slave_ssp_handler_read		; if so go here
 	goto	i2c_slave_ssp_handler_write			; if not, go here
 
 i2c_slave_ssp_handler_read
 	btfss	SSPSTAT, 5					; was last byte an address or data?
-	goto	i2c_slave_ssp_handler_read_address		; if clear, it was an address
+		goto	i2c_slave_ssp_handler_read_address	; if clear, it was an address
 	goto	i2c_slave_ssp_handler_read_data			; if set, it was data
 
 i2c_slave_ssp_handler_read_address
-	bcf	STATUS, RP0
-	bcf	STATUS, RP1
-
+	banksel	SSPBUF
         movfw   SSPBUF						; Get the buffer data (clear BF)
         clrf    _mr_i2c_buffer_index
         clrf	W                           			; clear W
@@ -76,8 +70,7 @@ i2c_slave_ssp_handler_read_address
 	goto    i2c_slave_ssp_handler_exit 			; Go to i2c_slave_ssp_handler_exit to return from interrupt
 
 i2c_slave_ssp_handler_read_data
-	bcf	STATUS, RP0
-	bcf	STATUS, RP1
+	banksel	SSPBUF
 
 	clrf	W       					; clear W
 	movlw	0x03						; load array elements value
@@ -108,8 +101,7 @@ i2c_slave_ssp_handler_write
 	goto	i2c_slave_ssp_handler_write_data		; if set, it was data
 
 i2c_slave_ssp_handler_write_address
-	bcf	STATUS, RP0
-	bcf	STATUS, RP1
+	banksel	SSPBUF
 
 	clrf	_mr_i2c_cmd_status
 	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_LOADING	; Set the command status flag, so we don't try to process until it's complete
@@ -123,8 +115,7 @@ i2c_slave_ssp_handler_write_address
 	goto    i2c_slave_ssp_handler_exit 			; Go to i2c_slave_ssp_handler_exit to return from interrupt
 
 i2c_slave_ssp_handler_write_data
-	bcf	STATUS, RP0
-	bcf	STATUS, RP1
+	banksel	SSPBUF
 
         clrf	W						; clear W
 	movf    _mr_i2c_cmd_size, F				; Have we loaded in the payload size yet
@@ -184,9 +175,7 @@ i2c_slave_ssp_handler_exit
 	return
 
 i2c_slave_clear_overflow
-	bcf	STATUS, RP0
-	bcf	STATUS, RP1
-
+	banksel	SSPCON
 	btfss	SSPCON, SSPOV					; Has an overflow occured
 		call	i2c_slave_clear_overflow_exit		; if so, clear it
 

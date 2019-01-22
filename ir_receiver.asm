@@ -36,6 +36,9 @@
 ;
 ; Commands are repeated every 110ms.
 ;
+; Extended protocol: the address redundancy is removed, but the
+; address range is extended to 16 bit.
+;
 ;*******************************************************************
 ; ir_receiver_timer_init
 ;
@@ -115,8 +118,8 @@ ir_receiver_timer_enable
 	clrf	_mr_ir_receiver_count_true					; Clear decoder state
 	clrf	_mr_ir_receiver_count_false
 	clrf	_mr_ir_receiver_error_count
-	clrf	_mr_ir_receiver_address
-	clrf	_mr_ir_receiver_address_inverted
+	clrf	_mr_ir_receiver_address_lsb
+	clrf	_mr_ir_receiver_address_msb
 	clrf	_mr_ir_receiver_command
 	clrf	_mr_ir_receiver_command_inverted
 	clrf	_mr_ir_receiver_command_repeat
@@ -153,17 +156,47 @@ ir_receiver_timer_disable
 ; Saves the receiver address back to the EEPROM
 ;
 ir_receiver_save_receiver_addr
+; LSB
+;*******************************************************************
 	banksel	EECON1
 	btfsc	EECON1, WR				; Wait for write
 	goto	$-1					; To finish
 
 	banksel	EEADR					; Setup data to write
-	movlw	eeprom_ir_addr - 0x2100
+	movlw	eeprom_ir_addr_lsb - 0x2100
 	movwf	EEADR					; Address to write to
-	banksel	_mr_ir_receiver_address_actual
-	movf	_mr_ir_receiver_address_actual, W
+	banksel	_mr_ir_receiver_address_lsb_actual
+	movf	_mr_ir_receiver_address_lsb_actual, W
 	banksel	EEDATA
-	movwf	EEDATA					; Data to write (_mr_ir_receiver_address_actual)
+	movwf	EEDATA					; Data to write (_mr_ir_receiver_address_lsb_actual)
+
+	banksel	EECON1
+	bcf	EECON1, EEPGD				; Point to Data memory
+	bcf	INTCON, GIE				; Disable interrupts
+	bsf	EECON1, WREN				; Enable writes
+
+	movlw	0x55					; Special sequence, needed for write
+	movwf	EECON2					; Write 55h to EECON2
+	movlw	0xAA
+	movwf	EECON2					; Write AAh to EECON2
+	bsf	EECON1, WR				; Start write operation
+
+	bcf	EECON1, WREN				; Disable writes
+	bsf	INTCON, GIE				; Enable interrupts
+
+; MSB
+;*******************************************************************
+	banksel	EECON1
+	btfsc	EECON1, WR				; Wait for write
+	goto	$-1					; To finish
+
+	banksel	EEADR					; Setup data to write
+	movlw	eeprom_ir_addr_msb - 0x2100
+	movwf	EEADR					; Address to write to
+	banksel	_mr_ir_receiver_address_msb_actual
+	movf	_mr_ir_receiver_address_msb_actual, W
+	banksel	EEDATA
+	movwf	EEDATA					; Data to write (_mr_ir_receiver_address_msb_actual)
 
 	banksel	EECON1
 	bcf	EECON1, EEPGD				; Point to Data memory
@@ -206,10 +239,6 @@ ir_receiver_interrupt_handler_mode_wait
 	movwf	_mr_ir_receiver_count_true					; We've already counted one 'cycle'
 	movwf	_mr_ir_receiver_bit_index					; This is a bit indicator, so set 1
 	clrf	_mr_ir_receiver_count_false
-	clrf	_mr_ir_receiver_address
-	clrf	_mr_ir_receiver_address_inverted
-	clrf	_mr_ir_receiver_command
-	clrf	_mr_ir_receiver_command_inverted
 	clrf	_mr_ir_receiver_command_repeat
 	movlw	IR_RECEIVER_MODE_BURST						; Set to the next mode
 	movwf	_mr_ir_receiver_state
@@ -252,22 +281,49 @@ ir_receiver_interrupt_handler_mode_burst_high
 		goto	ir_receiver_interrupt_handler_mode_invalid		; Counter's rolled over, BAD!!!
 	goto	ir_receiver_interrupt_handler_exit
 ir_receiver_interrupt_handler_mode_burst_check
-	movf	_mr_ir_receiver_count_true, W					; Check '1' counter is between 64 and 128
-	andlw	0xC0								; Remove LSBs
-	btfsc	STATUS, Z							; '1' counter >= 64
-		goto	ir_receiver_interrupt_handler_mode_invalid
-	andlw	0x40
-	btfsc	STATUS, Z							; '1' counter < 128
-		goto	ir_receiver_interrupt_handler_mode_invalid
+	movf	_mr_ir_receiver_count_true, W					; Check '1' counter is < 95
+	sublw	0x5F								; 95 - '1' count -> W
+	btfss	STATUS, C
+		goto    ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's greater than 95
+	movf	_mr_ir_receiver_count_true, W					; Check '1' counter is > 85
+	sublw	0x55								; 85 - '1' count -> W
+	btfsc	STATUS, C
+		goto    ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's less than 85
 
-	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is between 32 and 64
-	andlw	0xE0								; Remove LSBs
-	btfsc	STATUS, Z							; '1' counter >= 32
-		goto	ir_receiver_interrupt_handler_mode_invalid
-	andlw	0x20
-	btfsc	STATUS, Z							; '1' counter < 64
-		goto	ir_receiver_interrupt_handler_mode_invalid
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is < 50
+	sublw	0x32								; 50 - '0' count -> W
+	btfss	STATUS, C
+		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's greater than 50
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is > 40
+	sublw	0x28								; 40 - '0' count -> W
+	btfsc	STATUS, C
+		goto	ir_receiver_interrupt_handler_mode_burst_repeat_check
 
+	clrf	_mr_ir_receiver_address_lsb					; This is not a repeat command
+	clrf	_mr_ir_receiver_address_msb					; So clear the registers
+	clrf	_mr_ir_receiver_command
+	clrf	_mr_ir_receiver_command_inverted
+	goto	ir_receiver_interrupt_handler_mode_burst_check_verified	; It's valid, as it's greater than 40
+
+ir_receiver_interrupt_handler_mode_burst_repeat_check
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is < 25	(Checking for repeat code)
+	sublw	0x19								; 25 - '0' count -> W
+	btfss	STATUS, C
+		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's greater than 25
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is > 18
+	sublw	0x12								; 18 - '0' count -> W
+	btfsc	STATUS, C
+		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's less than 19
+
+										; This is a repeat command
+	clrf	_mr_ir_receiver_count_true					; Clear the sample register
+	incf	_mr_ir_receiver_count_true, F
+	clrf	_mr_ir_receiver_count_false
+	movlw	IR_RECEIVER_MODE_STOP						; Just wait for the stop bit
+	movwf	_mr_ir_receiver_state
+	goto	ir_receiver_interrupt_handler_exit				; Goto exit
+
+ir_receiver_interrupt_handler_mode_burst_check_verified
 	clrf	_mr_ir_receiver_count_true					; Clear the sample register
 	incf	_mr_ir_receiver_count_true, F
 	clrf	_mr_ir_receiver_count_false
@@ -305,13 +361,14 @@ ir_receiver_interrupt_handler_mode_byte_check
 	btfss	STATUS, Z							; '1' counter < 8
 		goto	ir_receiver_interrupt_handler_mode_invalid
 
-	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is between 4 and 32
-	andlw	0xFC								; Remove LSBs
-	btfsc	STATUS, Z							; '0' counter >= 4
-		goto	ir_receiver_interrupt_handler_mode_invalid
-	andlw	0xE0
-	btfss	STATUS, Z							; '0' counter < 32
-		goto	ir_receiver_interrupt_handler_mode_invalid
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is < 18
+	sublw	0x12								; 18 - '0' count -> W
+	btfss	STATUS, C
+		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's greater than 18
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is >= 4
+	sublw	0x03								; 3 - '0' count -> W
+	btfsc	STATUS, C
+		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's less than 4
 
 	clrf	_mr_ir_receiver_ft_divide					; Reset divide store
 	movf	_mr_ir_receiver_count_true, W
@@ -335,9 +392,9 @@ ir_receiver_interrupt_handler_mode_byte_check_ratio
 ir_receiver_interrupt_handler_mode_byte_bit_true
 	movf	_mr_ir_receiver_bit_index, W
 	btfsc	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_ADDRESS
-		iorwf	_mr_ir_receiver_address, F
+		iorwf	_mr_ir_receiver_address_lsb, F
 	btfsc	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_ADDRESS_INV
-		iorwf	_mr_ir_receiver_address_inverted, F
+		iorwf	_mr_ir_receiver_address_msb, F
 	btfsc	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_COMMAND
 		iorwf	_mr_ir_receiver_command, F
 	btfsc	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_COMMAND_INV
@@ -366,17 +423,22 @@ ir_receiver_interrupt_handler_mode_stop
 
 ; Process command
 ;*******************************************************************
-	comf	_mr_ir_receiver_address_inverted, W				; Check if the address and inverted versions match
-	subwf	_mr_ir_receiver_address, W
-	btfss	STATUS, Z
-		goto	ir_receiver_interrupt_handler_mode_invalid
+; Address check dropped for the extended protocol
+;	comf	_mr_ir_receiver_address_msb, W					; Check if the address and inverted versions match
+;	subwf	_mr_ir_receiver_address_lsb, W
+;	btfss	STATUS, Z
+;		goto	ir_receiver_interrupt_handler_mode_invalid
 	comf	_mr_ir_receiver_command_inverted, W				; Check if the command and inverted versions match
 	subwf	_mr_ir_receiver_command, W
 	btfss	STATUS, Z
 		goto	ir_receiver_interrupt_handler_mode_invalid
 
-	movf	_mr_ir_receiver_address, W					; Check received address against our address
-	subwf	_mr_ir_receiver_address_actual, W
+	movf	_mr_ir_receiver_address_lsb, W					; Check received address against our address (LSB)
+	subwf	_mr_ir_receiver_address_lsb_actual, W
+	btfss	STATUS, Z
+		goto	ir_receiver_interrupt_handler_mode_reset		; Addresses don't match, so just reset
+	movf	_mr_ir_receiver_address_msb, W					; Check received address against our address (MSB)
+	subwf	_mr_ir_receiver_address_msb_actual, W
 	btfss	STATUS, Z
 		goto	ir_receiver_interrupt_handler_mode_reset		; Addresses don't match, so just reset
 

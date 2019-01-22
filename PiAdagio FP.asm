@@ -15,7 +15,7 @@
 	__CONFIG _CP_OFF & _PWRTE_ON & _WDT_OFF & _XT_OSC & _LVP_ON
 	ERRORLEVEL -302 ;remove message about using proper bank
 
-	#define NODE_ADDR		0x22		; I2C address of this node
+	#define NODE_ADDR		0x22		; I2C address of this node (address 17, it's stored in it's shifted state!)
 	#define RX_BUF_LEN		22		; Length of receive buffer (cmd str + cmd pos + max str len (20))
 	#define I2C_CHAR_CLEAR		0x00		; value to load into array after transmit
 	#define	LCD_LINE_LENGTH		20		; Line length of lcd
@@ -41,10 +41,10 @@
 		_mr_ir_receiver_count_false,_mr_ir_receiver_count_true
 		_mr_ir_receiver_state,_mr_ir_receiver_error_count
 		_mr_ir_receiver_bit_index,_mr_ir_receiver_ft_divide
-		_mr_ir_receiver_address,_mr_ir_receiver_address_inverted
+		_mr_ir_receiver_address_lsb,_mr_ir_receiver_address_msb
 		_mr_ir_receiver_command,_mr_ir_receiver_command_inverted
 		_mr_ir_receiver_command_actual,_mr_ir_receiver_command_repeat
-		_mr_ir_receiver_address_actual
+		_mr_ir_receiver_address_lsb_actual,_mr_ir_receiver_address_msb_actual
 ; i2c registers
 		_mr_i2c_temp,_mr_i2c_cmd_status,_mr_i2c_cmd_size
 		_mr_i2c_buffer: RX_BUF_LEN, _mr_i2c_buffer_index
@@ -107,6 +107,8 @@ ISR_Tmr1_int
 	banksel	PIR2
 	btfss   PIR2, CCP2IF
 		goto    ISR_i2c_int
+	btfss	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_WAIT
+		call	set_power_led_toggle	; Indicate IR reception
 	call    ir_receiver_interrupt_handler
 	goto	ISR_exit
 
@@ -114,6 +116,12 @@ ISR_i2c_int
 	banksel	PIR1
 	btfsc	PIR1,SSPIF			; Is this a SSP interrupt?
 		call	i2c_slave_ssp_handler	; Yes, service SSP interrupt. By skipping is this going to cause problems on bus collisions
+
+ISR_Ext_int
+	btfss	INTCON, INTF
+		goto	ISR_exit
+	call	mode_poweroff_set
+	bcf	INTCON, INTF
 
 ISR_exit
 	banksel	FSRsave
@@ -137,10 +145,9 @@ main
 	bsf	INTCON, GIE
 	bsf	INTCON, PEIE
 
-	call	screen_timer_init			; Setup timer to refresh LCD
 	call	screen_timer_enable			; Enable refresh timer
-	call	ir_receiver_timer_init
-	call	ir_receiver_timer_enable
+	call	ir_receiver_timer_enable		; Enable IR receiver timer
+	call	ctrl_rpi_shutdown_int_enable		; Enable power off on shutdown of RPi
 
 main_loop
 	clrwdt						; Clear watchdog timer
@@ -176,6 +183,8 @@ main_loop_mode_poweroff
 		goto	main_loop_mode_poweron
 ; Power off section
 ;***********************************************************************
+	call	set_power_led_off
+
 	banksel	_mr_mode_cur
 	movf	_mr_mode_cur, W
 	subwf	_mr_mode_prev, W
@@ -205,6 +214,8 @@ main_loop_mode_poweron
 		goto	main_loop_mode_testfp
 ; Power on section
 ;***********************************************************************
+	call	set_power_led_on
+
 	banksel	_mr_mode_cur
 	movf	_mr_mode_cur, W
 	subwf	_mr_mode_prev, W
@@ -348,7 +359,7 @@ mode_poweroff_set
 mode_poweroff_init
 	call	screen_clear				; Clear screen buffer
 	call	set_online_led_off
-	call	set_power_led_off
+	call	set_psu_off
 
 	banksel	_mr_mode_prev
 	movlw	MODE_POWEROFF
@@ -365,8 +376,9 @@ mode_poweron_set
 	return
 
 mode_poweron_init
-	call	set_power_led_on
+	call	set_online_led_off
 	call	set_mpu_as_i2c_slave				; Reset SSP as i2c slave and enable interrupts
+	call	set_psu_on
 
 	call	screen_draw_border				; Draw a border in the screen buffer
 
@@ -670,15 +682,14 @@ mode_testfp_test_buttons
 	movwf	FSR
 	movlw	'B'
 	call	screen_write_char
-	movlw	'a'
-	call	screen_write_char
 	movlw	'n'
 	call	screen_write_char
 	movlw	'k'
 	call	screen_write_char
 	movlw	'1'
 	call	screen_write_char
-	incf	FSR, F
+	movlw	':'
+	call	screen_write_char
 	banksel	_mr_button_bank
 	movf	_mr_button_bank, W
 	call	screen_write_byte_as_hex
@@ -687,15 +698,14 @@ mode_testfp_test_buttons
 	movwf	FSR
 	movlw	'B'
 	call	screen_write_char
-	movlw	'a'
-	call	screen_write_char
 	movlw	'n'
 	call	screen_write_char
 	movlw	'k'
 	call	screen_write_char
 	movlw	'2'
 	call	screen_write_char
-	incf	FSR, F
+	movlw	':'
+	call	screen_write_char
 	banksel	_mr_button_bank
 	movf	(_mr_button_bank + 1), W
 	call	screen_write_byte_as_hex
@@ -704,36 +714,34 @@ mode_testfp_test_buttons
 	movwf	FSR
 	movlw	'B'
 	call	screen_write_char
-	movlw	'a'
-	call	screen_write_char
 	movlw	'n'
 	call	screen_write_char
 	movlw	'k'
 	call	screen_write_char
 	movlw	'3'
 	call	screen_write_char
-	incf	FSR, F
+	movlw	':'
+	call	screen_write_char
 	banksel	_mr_button_bank
 	movf	(_mr_button_bank + 2), W
 	call	screen_write_byte_as_hex
 
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR
+	movlw	'F'
+	call	screen_write_char
+	movlw	'P'
+	call	screen_write_char
+	movlw	' '
+	call	screen_write_char
 	movlw	'C'
 	call	screen_write_char
-	movlw	'o'
-	call	screen_write_char
 	movlw	'm'
-	call	screen_write_char
-	movlw	'm'
-	call	screen_write_char
-	movlw	'a'
-	call	screen_write_char
-	movlw	'n'
 	call	screen_write_char
 	movlw	'd'
 	call	screen_write_char
-	incf	FSR, F
+	movlw	':'
+	call	screen_write_char
 	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, W
 	call	screen_write_byte_as_hex
@@ -869,9 +877,13 @@ mode_testfp_test_ir
 	movwf	FSR
 	movlw	'R'
 	call	screen_write_char
+	movlw	'c'
+	call	screen_write_char
+	movlw	'v'
+	call	screen_write_char
 	movlw	'd'
 	call	screen_write_char
-	movlw	'_'
+	movlw	' '
 	call	screen_write_char
 	movlw	'A'
 	call	screen_write_char
@@ -883,17 +895,34 @@ mode_testfp_test_ir
 	call	screen_write_char
 	movlw	':'
 	call	screen_write_char
-	banksel	_mr_ir_receiver_address
-	movf	_mr_ir_receiver_address, W
+	banksel	_mr_ir_receiver_address_msb
+	movf	_mr_ir_receiver_address_msb, W
 	call    screen_write_byte_as_hex
+	banksel	_mr_ir_receiver_address_lsb
+	movf	_mr_ir_receiver_address_lsb, W
+	call    screen_write_byte_as_hex
+	movlw	'('
+	call	screen_write_char
+	banksel	_mr_ir_receiver_address_msb_actual
+	movf	_mr_ir_receiver_address_msb_actual, W
+	call    screen_write_byte_as_hex
+	banksel	_mr_ir_receiver_address_lsb_actual
+	movf	_mr_ir_receiver_address_lsb_actual, W
+	call    screen_write_byte_as_hex
+	movlw	')'
+	call	screen_write_char
 
-	movlw	_mr_screen_buffer_line1 + 11
+	movlw	_mr_screen_buffer_line2
 	movwf	FSR
 	movlw	'R'
 	call	screen_write_char
+	movlw	'c'
+	call	screen_write_char
+	movlw	'v'
+	call	screen_write_char
 	movlw	'd'
 	call	screen_write_char
-	movlw	'_'
+	movlw	' '
 	call	screen_write_char
 	movlw	'C'
 	call	screen_write_char
@@ -907,32 +936,6 @@ mode_testfp_test_ir
 	movf	_mr_ir_receiver_command, W
 	call    screen_write_byte_as_hex
 
-	movlw	_mr_screen_buffer_line2
-	movwf	FSR
-	movlw	'R'
-	call	screen_write_char
-	movlw	'c'
-	call	screen_write_char
-	movlw	'v'
-	call	screen_write_char
-	movlw	'r'
-	call	screen_write_char
-	movlw	' '
-	call	screen_write_char
-	movlw	'A'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	'r'
-	call	screen_write_char
-	movlw	':'
-	call	screen_write_char
-	banksel	_mr_ir_receiver_address_actual
-	movf	_mr_ir_receiver_address_actual, W
-	call    screen_write_byte_as_hex
-
 	movlw	_mr_screen_buffer_line3
 	movwf	FSR
 	movlw	'E'
@@ -941,17 +944,9 @@ mode_testfp_test_ir
 	call	screen_write_char
 	movlw	'r'
 	call	screen_write_char
-	movlw	'o'
-	call	screen_write_char
-	movlw	'r'
-	call	screen_write_char
 	movlw	' '
 	call	screen_write_char
 	movlw	'C'
-	call	screen_write_char
-	movlw	'o'
-	call	screen_write_char
-	movlw	'u'
 	call	screen_write_char
 	movlw	'n'
 	call	screen_write_char
@@ -977,6 +972,26 @@ mode_testfp_test_ir
 	movf	_mr_ir_receiver_command_actual, W
 	call    screen_write_byte_as_hex
 
+	movlw	_mr_screen_buffer_line4 + 10
+	movwf	FSR
+	movlw	'F'
+	call	screen_write_char
+	movlw	'P'
+	call	screen_write_char
+	movlw	' '
+	call	screen_write_char
+	movlw	'C'
+	call	screen_write_char
+	movlw	'm'
+	call	screen_write_char
+	movlw	'd'
+	call	screen_write_char
+	movlw	':'
+	call	screen_write_char
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	call    screen_write_byte_as_hex
+
 	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, F
 	btfss	STATUS, Z
@@ -985,8 +1000,10 @@ mode_testfp_test_ir
 	sublw	CMD_EJECT					; If the eject button was previously depressed
 	btfss	STATUS, Z
 		goto	mode_testfp_test_ir_exit
-	movf	_mr_ir_receiver_address, W			; Update the IR receiver address, with previously received value
-	movwf	_mr_ir_receiver_address_actual
+	movf	_mr_ir_receiver_address_lsb, W			; Update the IR receiver address, with previously received value
+	movwf	_mr_ir_receiver_address_lsb_actual
+	movf	_mr_ir_receiver_address_msb, W			; Update the IR receiver address, with previously received value
+	movwf	_mr_ir_receiver_address_msb_actual
 	call	ir_receiver_save_receiver_addr			; Save address back to the EEPROM
 
 mode_testfp_test_ir_exit
@@ -1044,7 +1061,56 @@ set_mpu_as_i2c_slave
 	return
 
 ;***********************************************************************
-; Set Power LED state (W)
+; Set PSU state
+set_psu_off
+	banksel	PORTC
+	bcf	PORTC, 0x00
+	return
+
+set_psu_on
+	banksel	PORTC
+	bsf	PORTC, 0x00
+	return
+
+;***********************************************************************
+; Raspberry Pi controls
+; Reset toggles the function of the control pin between input and output
+; so as to allow the built in RC Power-On Reset system to function. So,
+; to reset the pin is made an output (set low), then the pin is changed
+; back to an input to provide a high impedance. This then allows the RC
+; circuit to charge normally.
+ctrl_rpi_reset
+	banksel	PORTA
+	bcf	PORTA, 0x05
+	banksel	TRISA
+	bcf	TRISA, 0x05
+	nop				; NOPs should provide sufficient delay
+	nop
+	bsf	TRISA, 0x05
+	return
+
+; This routine signals to the RPi to shutdown by pulsing a particular
+; GPIO. See dtoverlay: gpio-shutdown
+;***********************************************************************
+ctrl_rpi_shutdown
+	banksel	PORTB
+	bsf	PORTB, 0x07
+	nop				; NOPs should provide sufficient delay
+	nop
+	bcf	PORTB, 0x07
+	return
+
+; Enables the external interrupt pin. This allows the RPi to signal a
+; shutdown/halt. See dtoverlay: gpio-poweroff
+;***********************************************************************
+ctrl_rpi_shutdown_int_enable
+	banksel	OPTION_REG
+	bsf	OPTION_REG, INTEDG
+	bsf	INTCON, INTE
+	return
+
+;***********************************************************************
+; Set Power LED state
 set_power_led_off
 	banksel	PORTE
 	bcf	PORTE, 0x2				; Extinguish 'power' LED
@@ -1055,8 +1121,19 @@ set_power_led_on
 	bsf	PORTE, 0x2				; Light 'power' LED
 	return
 
+set_power_led_toggle					; Used for indicating IR reception
+	banksel	PORTE
+	btfss	PORTE, 0x2
+		goto	set_power_led_toggle_on
+	bcf	PORTE, 0x2
+	goto	set_power_led_toggle_exit
+set_power_led_toggle_on
+	bsf	PORTE, 0x2				; Light 'power' LED
+set_power_led_toggle_exit
+	return
+
 ;***********************************************************************
-; Set Online LED state (W)
+; Set Online LED state
 set_online_led_off
 	banksel	PORTC
 	bcf	PORTC, 0x1				; Extinguish 'online' LED
@@ -1073,109 +1150,85 @@ set_online_led_on
 ; Initialise MPU
 init_mpu
 	banksel	PCON
-	bsf	PCON,NOT_POR
-	bsf	PCON,NOT_BOR
+	bsf	PCON,NOT_POR				; Clear Power-On reset flag
+	bsf	PCON,NOT_BOR				; Clear Brown-Out reset flag
 
-	BCF     STATUS, RP1
-	BCF     STATUS, RP0
-	CLRWDT
+	clrwdt
 
-	MOVLW   0x07					; (OLD CODE: Startup for Main CPU board?)
-	MOVWF   PORTB
+; Bank 0
+	banksel	PIR1
+	clrf   PIR1					; Reset registers
+	clrf   PIR2
+	clrf   TMR1L
+	clrf   TMR1H
+	clrf   T1CON
+	clrf   CCPR1L
+	clrf   CCPR1H
+	clrf   ADCON0
+	clrf   CCP1CON
+	clrf   CCP2CON
+	clrf   TMR2
+	clrf   RCSTA
 
-	MOVLW   0x20
-	MOVLW   0x05					; These are reduntant (don't know why they are in the original code)
+; Bank 1
+	banksel	TRISA
+;	movlw	0xEF
+;	movwf	TRISA					; Configure PORTA (Inputs: 0,1,2,3,5,6,7 | Outputs: 4)
+	movlw	0xCF
+	movwf	TRISA					; Configure PORTA (Inputs: 0,1,2,3,6,7 | Outputs: 4,5)
 
-	MOVLW   0x00
-	MOVWF   PIR1					; Reset registers
-	MOVWF   PIR2
-	MOVWF   TMR1L
-	MOVWF   TMR1H
-	MOVWF   TMR2
-	MOVWF   T1CON
-	MOVWF   CCPR1L
-	MOVWF   CCPR1H
-	MOVWF   RCSTA
-	MOVWF   ADCON0
-	MOVWF   CCP1CON
-	MOVWF   CCP2CON
+;	movlw	0xF7
+;	movwf	TRISB					; Configure PORTB (Inputs: 0,1,2,4,5,6,7 | Outputs: 3)
+	movlw	0x77
+	movwf	TRISB					; Configure PORTB (Inputs: 0,1,2,4,5,6 | Outputs: 3,7)
 
-	MOVLW   0x05
-	MOVWF   T2CON					; Set Timer2 on, with prescalar of 4
+;	movlw	0x1D
+;	movwf	TRISC					; Configure PORTC (Inputs: 0,2,3,4 | Outputs: 1,5,6,7)
+	movlw	0x1C
+	movwf	TRISC					; Configure PORTC (Inputs: 2,3,4 | Outputs: 0,1,5,6,7)
 
-	BSF     STATUS, RP0
-	MOVLW   0x19
-	MOVWF   TRISC					; Configure PORTC (Inputs: 0,3,4 | Outputs: 1,2,5,6,7)
-	BCF     STATUS, RP0
-	MOVLW   0x09
-	MOVWF   _mr_loop1					; Setup loop counter
-init_mpu_wait_4_portc4_l1
-	BTFSC   PORTC, 0x4				; Test PortC{4},
-	GOTO    init_mpu_configure_ports		; If it's set, skip to next section
-	MOVLW   0x09
-	MOVWF   PORTC					; Set output when it's an input ??????????
-	BCF     STATUS, RP0
-	MOVLW   0x00
-	MOVWF   PORTC					; Set output when it's an input ??????????
-	MOVLW   0x19
-	MOVWF   _mr_loop2				; Setup loop counter
-init_mpu_wait_4_portc4_l2
-	DECFSZ  _mr_loop2, 0x1
-	GOTO    init_mpu_wait_4_portc4_l2
-	MOVLW   0x19					; Set output when it's an input ??????????
-	MOVWF   PORTC
-	BCF     STATUS, RP0
-	MOVLW   0x19
-	MOVWF   _mr_loop2				; Setup loop counter
-init_mpu_wait_4_portc4_l3
-	DECFSZ  _mr_loop2, 0x1
-	GOTO    init_mpu_wait_4_portc4_l3
-	DECFSZ  _mr_loop1, 0x1
-	GOTO    init_mpu_wait_4_portc4_l1
+	movlw	0xFF
+	movwf	PR2					; Set Timer2 period register
+	movwf	TRISD					; Configure PORTD (Inputs: 0,1,2,3,4,5,6,7 | Outputs: )
 
-init_mpu_configure_ports
-	BSF     STATUS, RP0
-	MOVLW   0xef
-	MOVWF   TRISA					; Configure PORTA (Inputs: 0,1,2,3,5,6,7 | Outputs: 4)
-	BSF     STATUS, RP0
-	MOVLW   0xf7
-	MOVWF   TRISB					; Configure PORTB (Inputs: 0,1,2,4,5,6,7 | Outputs: 3)
-	MOVLW   0x1d
-	MOVWF   TRISC					; Configure PORTC (Inputs: 0,2,3,4 | Outputs: 1,5,6,7)
-	MOVLW   0x00
-	MOVWF   PIE1
-	MOVWF   PIE2
-	MOVWF   TXSTA
-	MOVWF   SPBRG
-	MOVWF   TRISE					; Configure PORTE (Inputs: | Outputs: 0,1,2,3,4,5,6,7 )
-	MOVLW   0xff
-	MOVWF   TRISD					; Configure PORTD (Inputs: 0,1,2,3,4,5,6,7 | Outputs: )
-	MOVWF   PR2
-	MOVLW   0x01
-	MOVWF   OPTION_REG
-	MOVLW   0x06
-	MOVWF   ADCON1
-	BCF     STATUS, RP0
-	MOVLW   0x00
-	MOVWF   PORTC
-	MOVWF   PORTE
+	clrf	PIE1					; Clear peripheral interrupts
+	clrf	PIE2					; Clear peripheral interrupts
+	clrf	SPBRG					; Clear baud rate generator register
+	clrf	TRISE					; Configure PORTE (Inputs: | Outputs: 0,1,2,3,4,5,6,7 )
+	clrf	TXSTA
+
+	movlw	0x95
+	movwf	OPTION_REG				; PORTB pull up resistors disabled, prescaler assigned to WDT, WDT rate: 1 : 128
+
+	movlw	0x06					; From the original code (????)
+	movwf	ADCON1
+
+	banksel	PORTA
+	clrf	PORTA					; Clear outputs
+	clrf	PORTB
+	clrf	PORTC
+	clrf	PORTE
+
+; Setup Timers
+	call	screen_timer_init			; Setup timer to refresh LCD
+	call	ir_receiver_timer_init			; Setup timer to sample IR receiver input
 
 	CALL	i2c_master_init
 
 ;	CALL    i2c_master_start
 ;	CALL    i2c_master_stop
 
-	call	set_online_led_on
+	call	set_online_led_on			; Turn on 'online' LED (This shows MPU initialised)
 
-	MOVLW   0x32
-	MOVWF   0x66					; Setup loop counter
-init_mpu_l1
-	CLRWDT
-	CALL    waste_time
-	DECFSZ  0x66, 0x1
-	GOTO    init_mpu_l1
+	movlw	0x32
+	movwf	_mr_temp				; Setup loop counter
+init_mpu_led_loop
+	clrwdt
+	call	waste_time
+	decfsz	_mr_temp, F
+		goto	init_mpu_led_loop
 
-	call	set_online_led_off
+	call	set_online_led_off			; Turn off 'online' LED
 
 	return
 
@@ -1209,61 +1262,39 @@ init_mem
 	call	screen_clear					; Clear screen buffer
 
 	banksel	EEADR
-	movlw	eeprom_ir_addr - 0x2100				; Get the IR receiver address
+	movlw	eeprom_ir_addr_lsb - 0x2100			; Get the IR receiver address
 	movwf	EEADR
 	banksel	EECON1
 	bcf	EECON1, EEPGD					; Select EEPROM memory
 	bsf	EECON1, RD					; Start read operation
 	banksel	EEDATA
 	movf	EEDATA, W
-	banksel	_mr_ir_receiver_address_actual
-	movwf	_mr_ir_receiver_address_actual
+	banksel	_mr_ir_receiver_address_lsb_actual
+	movwf	_mr_ir_receiver_address_lsb_actual
+
+	banksel	EEADR
+	movlw	eeprom_ir_addr_msb - 0x2100			; Get the IR receiver address
+	movwf	EEADR
+	banksel	EECON1
+	bcf	EECON1, EEPGD					; Select EEPROM memory
+	bsf	EECON1, RD					; Start read operation
+	banksel	EEDATA
+	movf	EEDATA, W
+	banksel	_mr_ir_receiver_address_msb_actual
+	movwf	_mr_ir_receiver_address_msb_actual
 
 	return
 
 ;***********************************************************************
 ; Initialise Hardware
 init_board
-	bcf	STATUS, RP1
-	bcf	STATUS, RP0
-
-;	call    0x049c					; Jump to 0xc9c (Read EEPROM)
-
-	movlw   0x64
-	movwf   0x4e					; Setup loop counter
-init_board_l1
 	clrwdt
-	call    waste_time
-	decfsz  0x4e, 0x1
-	goto    init_board_l1
-
-	btfsc   PORTC, 0x0
-	goto    init_board_j1
-
-	movlw   0x08
-	movwf   0x6b
-;	bsf     0x6b, 0x2
-;	bcf     0x6b, 0x0
-;	call    0x05ca					; Jump to 0xdca (Read EEPROM)
 
 	call	LCD_INITIALIZE
 
-;	call    lcd_write_bckcon_default_bck		; The backlight would be setup with a value from EEPROM, bypassed
-;;	call    lcd_write_bckcon_default_con		; Fudge contrast value as well for testing
+;	call	lcd_write_bckcon_default_bck		; The backlight would be setup with a value from EEPROM, bypassed
+;	call	lcd_write_bckcon_default_con		; Fudge contrast value as well for testing
 
-	goto    init_board_j2
-
-init_board_j1
-;	call    0x05ca					; Jump to 0xdca (Read EEPROM)
-	movlw   0x08
-	movwf   0x6b
-init_board_j2
-	banksel	T1CON
-	bcf     T1CON, 0x0
-	movlw   0x00
-	movwf   TMR1L
-	movwf   TMR1H
-	bcf     PIR1, 0x0
 	return
 
 ;***********************************************************************
@@ -1299,7 +1330,8 @@ waste_time_l1
 ;***********************************************************************
 ;***********************************************************************
 .eedata	org	0x2100
-eeprom_ir_addr		de	0x42
+eeprom_ir_addr_lsb	de	0x24
+eeprom_ir_addr_msb	de	0x42
 eeprom_str_title1	de	"PiAdagio Sound\0"
 eeprom_str_title2	de	"Server\0"
 eeprom_str_poweroff	de	"Power Off\0"
