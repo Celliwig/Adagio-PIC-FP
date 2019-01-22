@@ -10,7 +10,8 @@
 ;---------------------------------------------------------------------
 FP_CMD_BIT_CLEAR_SCREEN		EQU	0x00
 FP_CMD_BIT_WRITE_SCREEN		EQU	0x01
-FP_CMD_BIT_LED			EQU	0x02
+FP_CMD_BIT_LCD_CGRAM_UPDATE	EQU	0x02
+FP_CMD_BIT_LED_CONTROL		EQU	0x03
 
 ;---------------------------------------------------------------------
 ; Command status

@@ -1,3 +1,4 @@
+#define         OLED_DISPLAY            ; Enable extra configuration for OLED displays
 #define		LCD_BASE_ADDR	0xA00
 
 
@@ -59,6 +60,20 @@ LCD_CURSOR_ON		EQU	0x02			; c=1
 LCD_BLINK_OFF		EQU	0x00			; b=0
 LCD_BLINK_ON		EQU	0x01			; b=1
 
+
+IFDEF	OLED_DISPLAY
+;LCD Command Function Set =  0001sr00	- cursor & display shift
+;LCD Command Function Set =  0001mp11	- mode (character/graphics) & DC/DC PSU
+;  s/r = shift cursor/display to the left or right
+;  m = 1 is graphics mode, 0 is character mode
+;  p = 1 internal power is on, 0 the power is off
+LCD_CMD_SHIFT_CTRL	EQU	0x10
+LCD_CMD_MODEPWR_CTRL	EQU	0x13
+LCD_MODE_GRAPHICS	EQU	0x08
+LCD_MODE_CHAR		EQU	0x00
+LCD_DCDC_ON		EQU	0x04
+LCD_DCDC_OFF		EQU	0x00
+ENDIF
 
 ;LCD Command Function Set =  001dnfxx
 ;  d = 1 for 8-bit interface or 0 for 4-bit interface

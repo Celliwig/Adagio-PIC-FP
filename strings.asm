@@ -11,7 +11,7 @@
 str_panel_border_full		da	"********************\0"
 str_panel_border_edges		da	"*                  *\0"
 str_panel_title1		da	"PiAdagio Sound\0"
-str_panel_title2		da	"Server\0"
+str_panel_title2		da	"System\0"
 
 str_tests_tmode0		TESTFP_TEST_LIST	TESTFP_OBJ_FLASH,0
 str_tests_tmode1		TESTFP_TEST_LIST	TESTFP_OBJ_FLASH,1

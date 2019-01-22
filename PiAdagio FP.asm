@@ -540,7 +540,9 @@ fp_cmd_process
 		goto 	fp_cmd_process_clear_screen
 	btfsc	_mr_i2c_buffer, FP_CMD_BIT_WRITE_SCREEN			; Write screen command
 		goto	fp_cmd_process_write_screen
-	btfsc	_mr_i2c_buffer, FP_CMD_BIT_LED				; LED control command
+	btfsc	_mr_i2c_buffer, FP_CMD_BIT_LCD_CGRAM_UPDATE		; LCD Character Generator RAM update
+		goto	fp_cmd_process_lcd_cgram_update
+	btfsc	_mr_i2c_buffer, FP_CMD_BIT_LED_CONTROL			; LED control command
 		goto	fp_cmd_process_led_control
 
 	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED		; Mark command as done anyway
@@ -673,6 +675,28 @@ fp_cmd_process_write_screen_char_loop
 		goto	fp_cmd_process_write_screen_char_loop
 
 fp_cmd_process_write_screen_finish
+	banksel	_mr_i2c_cmd_status
+	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED	; Mark command as processed
+
+	goto	fp_cmd_process
+
+;***********************************************************************
+; Process command - LCD CGRAM update
+fp_cmd_process_lcd_cgram_update
+	movlw	0xa
+	subwf	_mr_i2c_cmd_size, W				; Check command size
+	btfss	STATUS, Z
+		goto	fp_cmd_process_lcd_cgram_update_finish
+
+	movlw	(_mr_i2c_buffer + 1)
+	movwf	FSR
+
+	movlw	(LCD_BASE_ADDR>>8)				; Select high address
+	movwf	PCLATH						; For the next 'call'
+	call	LCD_WRITE_CGDATA				; Write CGRAM data to LCD
+	clrf	PCLATH
+
+fp_cmd_process_lcd_cgram_update_finish
 	banksel	_mr_i2c_cmd_status
 	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED	; Mark command as processed
 

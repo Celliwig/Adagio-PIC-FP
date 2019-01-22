@@ -2,7 +2,7 @@
 ;
 ; The file contains code to control an LCD module.
 ;
-; T. Scott Dattalo
+; Originally developed by T. Scott Dattalo (see gpsim)
 ;
 ;********************************************************************************
 
@@ -112,7 +112,17 @@ lcd_init_8bit:
 	movlw	LCD_CMD_FUNC_SET | LCD_8bit_MODE | LCD_2_LINES | LCD_SMALL_FONT
 	call	LCD_WRITE_CMD
 
+	; If this is an OLED display, make sure to turn on DC/DC PSU and select character mode
+	IFDEF	OLED_DISPLAY
+	banksel	_mr_lcd_module_state
+	bsf	_mr_lcd_module_state, 1
+	movlw	LCD_CMD_MODEPWR_CTRL | LCD_MODE_CHAR | LCD_DCDC_ON
+	call	LCD_WRITE_CMD
+	ENDIF
+
 	; Turn on the display and turn off the cursor. Set the cursor to the non-blink mode
+	banksel	_mr_lcd_module_state
+	bsf	_mr_lcd_module_state, 0
 	movlw	LCD_CMD_DISPLAY_CTRL | LCD_DISPLAY_ON | LCD_CURSOR_OFF | LCD_BLINK_OFF
 	call	LCD_WRITE_CMD
 
@@ -297,7 +307,7 @@ LCD_READ
 	call	LCD_RAISE_E
 	banksel	LCD_DATA_PORT
 	movf	LCD_DATA_PORT, W		; Read the LCD Data bus
-	bcf	LCD_CONTROL_PORT, LCD_E		; Turn off E
+	bcf	LCD_CONTROL_PORT, LCD_E		; Turn off E, don't need a delay here
 
 	banksel	LCD_DATA_TRIS			; Return the data lines to outputs
 	clrf	LCD_DATA_TRIS
@@ -342,35 +352,11 @@ LCD_BUSY_CHECK
 ;	LCD_WRITE_CMD: _mr_lcd_temp (temporarily store command)
 ;	LCD_WRITE_CMD: _mr_lcd_delayloop1
 ;	LCD_WRITE_CMD: _mr_lcd_delayloop2
-;	LCD_WRITE_DATA: W (character to write to lcd)
-;	LCD_WRITE_DATA: _mr_lcd_temp (temporarily store character)
-;	LCD_WRITE_DATA: _mr_lcd_delayloop1
-;	LCD_WRITE_DATA: _mr_lcd_delayloop2
 ;
 LCD_CLEAR_SCREEN
 	; Clear the display memory. This command also moves the cursor to the home position
 	movlw	LCD_CMD_CLEAR_DISPLAY
 	call	LCD_WRITE_CMD
-
-;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW0 | SCR_COL0
-;	call	LCD_WRITE_CMD
-;	movlw	0x14
-;	call	LCD_CLEAR_CHARS
-;
-;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW1 | SCR_COL0
-;	call	LCD_WRITE_CMD
-;	movlw	0x14
-;	call	LCD_CLEAR_CHARS
-;
-;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW2 | SCR_COL0
-;	call	LCD_WRITE_CMD
-;	movlw	0x14
-;	call	LCD_CLEAR_CHARS
-;
-;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW3 | SCR_COL0
-;	call	LCD_WRITE_CMD
-;	movlw	0x14
-;	call	LCD_CLEAR_CHARS
 
 	return
 
@@ -423,6 +409,107 @@ LCD_WRITE_EEPROM_2_BUFFER_READ
 
 LCD_WRITE_EEPROM_2_BUFFER_EXIT
         return
+
+;*******************************************************************
+; LCD_CTRL_DISPLAY_x
+;
+; Controls whether the display is on or off (not the PSU)
+;
+;
+LCD_CTRL_DISPLAY_ON
+	banksel	_mr_lcd_module_state
+	btfsc	_mr_lcd_module_state, 0
+		return
+	bsf	_mr_lcd_module_state, 0
+	call	LCD_PORT_CONFIGURE
+	movlw	LCD_CMD_DISPLAY_CTRL | LCD_DISPLAY_ON | LCD_CURSOR_OFF | LCD_BLINK_OFF
+	call	LCD_WRITE_CMD
+	call	LCD_PORT_RESTORE
+	return
+
+LCD_CTRL_DISPLAY_OFF
+	banksel	_mr_lcd_module_state
+	btfss	_mr_lcd_module_state, 0
+		return
+	bcf	_mr_lcd_module_state, 0
+	call	LCD_PORT_CONFIGURE
+	movlw	LCD_CMD_DISPLAY_CTRL | LCD_DISPLAY_OFF | LCD_CURSOR_OFF | LCD_BLINK_OFF
+	call	LCD_WRITE_CMD
+	call	LCD_PORT_RESTORE
+	return
+
+IFDEF	OLED_DISPLAY
+;*******************************************************************
+; LCD_CTRL_POWER_x
+;
+; Controls whether the DC/DC convertor is on or off
+;
+; THIS DOESN'T APPEAR TO DO ANYTHING :( !!!
+;
+LCD_CTRL_POWER_ON
+	banksel	_mr_lcd_module_state
+	btfsc	_mr_lcd_module_state, 1
+		return
+	bsf	_mr_lcd_module_state, 1
+	call	LCD_PORT_CONFIGURE
+	movlw	LCD_CMD_MODEPWR_CTRL | LCD_MODE_CHAR | LCD_DCDC_ON
+	call	LCD_WRITE_CMD
+	call	LCD_PORT_RESTORE
+	return
+
+LCD_CTRL_POWER_OFF
+	banksel	_mr_lcd_module_state
+	btfss	_mr_lcd_module_state, 1
+		return
+	bcf	_mr_lcd_module_state, 1
+	call	LCD_PORT_CONFIGURE
+	movlw	LCD_CMD_MODEPWR_CTRL | LCD_MODE_CHAR | LCD_DCDC_OFF
+	call	LCD_WRITE_CMD
+	call	LCD_PORT_RESTORE
+	return
+ENDIF
+
+;*******************************************************************
+; LCD_WRITE_CGDATA
+;
+; Write data to CGRAM
+;
+; FSR -	Points to the data to load (must be in the first RAM bank)
+;	First byte is the index of the character to update
+;
+LCD_WRITE_CGDATA
+	call	LCD_PORT_CONFIGURE
+
+	banksel	_mr_i2c_buffer
+	movf	INDF, W			; Get character index
+	incf	FSR, F
+	andlw	0x07			; Constrain to < 8 (CGRAM limit)
+	banksel	_mr_lcd_temp
+	movwf	_mr_lcd_temp
+	movlw	0x8			; Setup loop counter
+	movwf	_mr_lcd_loop
+
+	; Mutiply character index by 8 to get address
+	bcf	STATUS, C		; Make sure CARRY is clear for shift
+	rlf	_mr_lcd_temp, F
+	rlf	_mr_lcd_temp, F
+	rlf	_mr_lcd_temp, W
+
+	iorlw	LCD_CMD_SET_CGRAM	; Add CGRAM command
+	call	LCD_WRITE_CMD
+
+LCD_WRITE_CGDATA_LOOP
+	banksel	_mr_i2c_buffer
+	movf	INDF, W
+	call	LCD_WRITE_DATA
+	incf	FSR, F
+	banksel	_mr_lcd_loop
+	decfsz	_mr_lcd_loop, F
+		goto	LCD_WRITE_CGDATA_LOOP
+
+	call	LCD_PORT_RESTORE
+
+	return
 
 ;*******************************************************************
 ; LCD_UPDATE_FROM_SCREEN_BUFFER
