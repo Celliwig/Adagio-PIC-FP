@@ -21,9 +21,11 @@ i2c_master_init
 								; R/W<2> Transmit in progress bit, cleared
 								; UA<1> Update Address bit, cleared
 								; BF<0> Buffer Full Status bit, cleared
+	bsf	SSPSTAT, 0x7					; Slew rate control disabled for standard speed mode (100 kHz and 1 MHz)
 
-	movlw	0x01
-	movwf	SSPADD						; 500kHz clock
+;	movlw	0x01						; 500kHz i2c clock (4 MHz clock)
+	movlw	0x27						; 100kHz i2c clock (16 MHz clock)
+	movwf	SSPADD
 
 	bcf	PIE1,SSPIE					; Disable i2c interrupts
 

@@ -6,5 +6,4 @@
 ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-#define		STR_PANEL_BASE_ADDR	0xC00
-#define		STR_TESTS_BASE_ADDR	0xD00
+#define		STRINGS_BASE_ADDR		0xD00

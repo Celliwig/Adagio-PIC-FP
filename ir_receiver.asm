@@ -54,8 +54,12 @@
 ;
 ir_receiver_timer_init
 	banksel	CCPR2H
-	clrf	CCPR2H		; Setup the CCP2 registers, to generate a periodic interrupt
-	movlw	0x64		; 100, to give a 10kHz interrupt
+;	clrf	CCPR2H		; Setup the CCP2 registers, to generate a periodic interrupt
+;	movlw	0x64		; 100, to give a 10kHz interrupt (4 MHz clock)
+;	movwf	CCPR2L
+	movlw	0x1		; Setup the CCP2 registers, to generate a periodic interrupt
+	movwf	CCPR2H		; 400, to give a 10kHz interrupt (16 MHz clock)
+	movlw	0x90
 	movwf	CCPR2L
 
 	movlw	0x0

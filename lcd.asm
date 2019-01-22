@@ -101,11 +101,9 @@ lcd_init_8bit:
 	iorlw	(LCD_CMD_FUNC_SET | LCD_8bit_MODE) >> LCD_DATA_SHIFT
 	movwf	LCD_DATA_PORT				; Put command on the bus
 
-	goto	$+1
-	bsf	LCD_CONTROL_PORT, LCD_E			; Enable the LCD, i.e. write the command.
-	goto	$+1					; NOP's are only needed for 20Mhz crystal
-	goto	$+1
-	bcf	LCD_CONTROL_PORT, LCD_E			; Disable the LCD
+	nop
+	call	LCD_RAISE_E
+	call	LCD_DROP_E
 
 	banksel	_mr_lcd_loop
 	decfsz	_mr_lcd_loop, F
@@ -160,56 +158,53 @@ LCD_DELAY_LOOP
 			goto	LCD_DELAY_LOOP
 		RETURN
 
-;*******************************************************************
-; LCD_TOGGLE_E
+;;*******************************************************************
+;; LCD_TOGGLE_E
+;;
+;; This routine toggles the "E" bit (enable) on the LCD module. The contents
+;; of W contain the state of the R/W and RS bits along with the data that's
+;; to be written (that is if data is to be written). The contents of the LCD port
+;; while E is active are returned in W.
+;;
+;; Code LCD_DROP_E & LCD_RAISE_E repeated here as this will save stack space.
+;;
+;; Registers used:
+;;	W (used to return lcd data)
+;;
+;LCD_TOGGLE_E
+;	banksel	LCD_CONTROL_PORT
+;	bcf	LCD_CONTROL_PORT, LCD_E		; Make sure E is low
+;LCD_LTE1:
+;	btfsc	LCD_CONTROL_PORT, LCD_E		; E is low the first time through the loop
+;		goto	LCD_LTE2
 ;
-; This routine toggles the "E" bit (enable) on the LCD module. The contents
-; of W contain the state of the R/W and RS bits along with the data that's
-; to be written (that is if data is to be written). The contents of the LCD port
-; while E is active are returned in W.
-;
-; Code LCD_DROP_E & LCD_RAISE_E repeated here as this will save stack space.
-;
-; Registers used:
-;	W (used to return lcd data)
-;
-LCD_TOGGLE_E
-	banksel	LCD_CONTROL_PORT
-
-	bcf	LCD_CONTROL_PORT, LCD_E		; Make sure E is low
-	nop					; Delays needed primarily for 10Mhz and faster clocks
-;	nop
-;	nop
-;	nop
-LCD_LTE1:
-	btfsc	LCD_CONTROL_PORT, LCD_E		; E is low the first time through the loop
-		goto	LCD_LTE2
-
-	bsf	LCD_CONTROL_PORT, LCD_E		; Make sure E is high
-	nop					; Delays needed primarily for 10Mhz and faster clocks
-;	nop
-;	nop
-;	nop
-	goto	LCD_LTE1
-LCD_LTE2:
-	movf	LCD_DATA_PORT, W		; Read the LCD Data bus
-	bcf	LCD_CONTROL_PORT, LCD_E		; Turn off E
-	return
+;	bsf	LCD_CONTROL_PORT, LCD_E		; Make sure E is high
+;	goto	LCD_LTE1
+;LCD_LTE2:
+;	movf	LCD_DATA_PORT, W		; Read the LCD Data bus
+;	bcf	LCD_CONTROL_PORT, LCD_E		; Turn off E
+;	return
 
 LCD_DROP_E
+	banksel	LCD_CONTROL_PORT
 	bcf	LCD_CONTROL_PORT, LCD_E		; Make sure E is low
-	nop					; Delays needed primarily for 10Mhz and faster clocks
-;	nop
-;	nop
-;	nop
+	banksel	_mr_lcd_enable_delay
+	movf	_mr_lcd_enable_delay, W		; Provides a delay needed primarily for faster clocks
+	movwf	_mr_lcd_delayloop1
+LCD_DROP_E_LOOP
+	decfsz	_mr_lcd_delayloop1, F
+		goto	LCD_DROP_E_LOOP
 	return
 
 LCD_RAISE_E
+	banksel	LCD_CONTROL_PORT
 	bsf	LCD_CONTROL_PORT, LCD_E		; Make sure E is high
-	nop					; Delays needed primarily for 10Mhz and faster clocks
-;	nop
-;	nop
-;	nop
+	banksel	_mr_lcd_enable_delay
+	movf	_mr_lcd_enable_delay, W		; Provides a delay needed primarily for faster clocks
+	movwf	_mr_lcd_delayloop1
+LCD_RAISE_E_LOOP
+	decfsz	_mr_lcd_delayloop1, F
+		goto	LCD_RAISE_E_LOOP
 	return
 
 ;*******************************************************************
@@ -269,8 +264,8 @@ LCD_WRITE_CMD
 ; Registers used:
 ;
 LCD_WRITE
-	call	LCD_RAISE_E
 	movwf	LCD_DATA_PORT
+	call	LCD_RAISE_E
 	call	LCD_DROP_E
 	return
 
@@ -294,14 +289,18 @@ LCD_WRITE
 ;
 LCD_READ
 	banksel	LCD_DATA_TRIS
-	movlw	LCD_DATA_MASK		; Set the TRIS bits - make all of the data
-	movwf	LCD_DATA_TRIS		; lines inputs.
+	movlw	LCD_DATA_MASK			; Set the TRIS bits - make all of the data
+	movwf	LCD_DATA_TRIS			; lines inputs.
 
-	call	LCD_TOGGLE_E		; Toggle E
+;	call	LCD_TOGGLE_E			; Toggle E
+	call	LCD_DROP_E
+	call	LCD_RAISE_E
+	banksel	LCD_DATA_PORT
+	movf	LCD_DATA_PORT, W		; Read the LCD Data bus
+	bcf	LCD_CONTROL_PORT, LCD_E		; Turn off E
 
-	banksel	LCD_DATA_TRIS		; Return the data lines to outputs
-	movlw	0
-	movwf	LCD_DATA_TRIS
+	banksel	LCD_DATA_TRIS			; Return the data lines to outputs
+	clrf	LCD_DATA_TRIS
 
 	return
 

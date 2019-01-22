@@ -8,9 +8,9 @@
 ;---------------------------------------------------------------------
 ; Command byte
 ;---------------------------------------------------------------------
-; FP_CMD_NOP				0x00		; Read structure in, do nothing
-FP_CMD_CLEAR_SCREEN		EQU	0x00
-FP_CMD_WRITE_SCREEN		EQU	0x01
+FP_CMD_BIT_CLEAR_SCREEN		EQU	0x00
+FP_CMD_BIT_WRITE_SCREEN		EQU	0x01
+FP_CMD_BIT_LED			EQU	0x02
 
 ;---------------------------------------------------------------------
 ; Command status
@@ -42,3 +42,16 @@ FP_LCD_ROW1			EQU	0x00
 FP_LCD_ROW2			EQU	0x01
 FP_LCD_ROW3			EQU	0x02
 FP_LCD_ROW4			EQU	0x03
+
+;---------------------------------------------------------------------
+; Led byte
+; |   7   |   6   |   5   |   4   |   3   |   2   |   1   |   0   |
+; -----------------------------------------------------------------
+; |   X   |   X   |   X   |   X   |   X   |   X   |  L1   |  L0   |
+;---------------------------------------------------------------------
+;
+; L0 - Power LED
+; L1 - Online LED
+;
+FP_CMD_LED_BIT_POWER		EQU	0x00
+FP_CMD_LED_BIT_ONLINE		EQU	0x01

@@ -17,7 +17,8 @@
 ;
 ;*******************************************************************
 ;Dev_Tcyc		EQU	400			; Tcyc = 400 ns, Instruction Cycle time (10 MHz)
-Dev_Tcyc		EQU	1000			; Tcyc = 2000 ns, Instruction Cycle time (4 MHz)
+;Dev_Tcyc		EQU	1000			; Tcyc = 1000 ns, Instruction Cycle time (4 MHz)
+Dev_Tcyc		EQU	250			; Tcyc = 250 ns, Instruction Cycle time (16 MHz)
 Inner_delay		EQU	(256*3 + 3)*Dev_Tcyc	; The amount of time spent in inner delay loop
 LCD_INIT_DELAY		EQU	15000000/Inner_delay	; 15ms
 

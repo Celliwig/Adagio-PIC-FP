@@ -14,13 +14,13 @@
 	include "strings.inc"
 	include "PiAdagio FP.inc"
 
-;	4 MHz ceramic resonator
-	__CONFIG _CP_OFF & _PWRTE_ON & _WDT_OFF & _XT_OSC & _LVP_ON
+;	__CONFIG _CP_OFF & _PWRTE_ON & _WDT_OFF & _XT_OSC & _LVP_ON	; 4MHz ceramic resonator
+	__CONFIG _CP_OFF & _PWRTE_ON & _WDT_OFF & _HS_OSC & _LVP_ON	; 16MHz ceramic resonator
 	ERRORLEVEL -302 ;remove message about using proper bank
 
-	#define NODE_ADDR		0x22		; I2C address of this node (address 17, it's stored in it's shifted state!)
-	#define RX_BUF_LEN		42		; Length of receive buffer (cmd str + cmd pos + 2 lines)
-	#define	LCD_LINE_LENGTH		20		; Line length of lcd
+	#define NODE_ADDR		0x22				; I2C address of this node (address 17, it's stored in it's shifted state!)
+	#define RX_BUF_LEN		42				; Length of receive buffer (cmd str + cmd pos + 2 lines)
+	#define	LCD_LINE_LENGTH		20				; Line length of lcd
 
 	#define	START_OF_RAM_1	0x20
 	#define	END_OF_RAM_1	0x7f
@@ -34,6 +34,7 @@
 ; General registers
 		_mr_mode_cur,_mr_mode_prev
 		_mr_cmd_cur,_mr_cmd_prev
+		_mr_cmd_buttons,_mr_cmd_ir
 		_mr_test_select						; [7] run test, [6] subtest select, [5-4] subtest number, [3-0] test number
 		_mr_pwrctrl_select
 		_mr_loop1,_mr_loop2
@@ -62,7 +63,7 @@
 ; General registers
 		_mr_oldxtris,_mr_oldytris				; Old TRIS values
 ; Screen buffer registers
-		_mr_screen_buffer_update				; <0> Update screen, <1> Disable screen update
+		_mr_screen_buffer_update				; <0-2> Screen update counter, <7> Disable screen update
 		_mr_screen_buffer_loop
 		_mr_screen_buffer_temp
 		_mr_screen_buffer_line1: LCD_LINE_LENGTH		; Screen buffer
@@ -70,6 +71,7 @@
 		_mr_screen_buffer_line2: LCD_LINE_LENGTH		; Screen buffer
 		_mr_screen_buffer_line4: LCD_LINE_LENGTH		; Screen buffer
 ; LCD registers
+		_mr_lcd_enable_delay					; This controls the delay time needed for the enable line to register
 		_mr_lcd_loop
 		_mr_lcd_temp
 		_mr_lcd_delayloop1, _mr_lcd_delayloop2
@@ -88,44 +90,60 @@ ISRVector	org	0x004
 ; Interrupt Code
 ;---------------------------------------------------------------------
 ISR
-	movwf	WREGsave			; Save WREG (any bank)
-	swapf	STATUS, W			; Get STATUS register (without affecting it)
-	banksel	STATUSsave			; Switch banks, after we have copied the STATUS register
-	movwf	STATUSsave			; Save the STATUS register
+	movwf	WREGsave				; Save WREG (any bank)
+	swapf	STATUS, W				; Get STATUS register (without affecting it)
+	banksel	STATUSsave				; Switch banks, after we have copied the STATUS register
+	movwf	STATUSsave				; Save the STATUS register
 	movf	PCLATH, W
-	movwf	PCLATHsave			; Save PCLATH
+	movwf	PCLATHsave				; Save PCLATH
 	movf	FSR, W
-	movwf	FSRsave				; Save FSR
+	movwf	FSRsave					; Save FSR
 
-	clrf	PCLATH				; Clear PCLATH register
-
-ISR_i2c_int
-	banksel	PIR1
-	btfss	PIR1, SSPIF			; Is this a SSP interrupt?
-		goto	ISR_Tmr1_int
-	call	i2c_slave_ssp_handler		; Yes, service SSP interrupt. By skipping is this going to cause problems on bus collisions
-	goto	ISR_exit
+	clrf	PCLATH					; Clear PCLATH register
 
 ISR_Tmr1_int
 	banksel	PIR2
 	btfss   PIR2, CCP2IF
-		goto    ISR_Tmr2_int
+		goto    ISR_i2c_int
 	btfss	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_WAIT
-		call	set_power_led_toggle	; Indicate IR reception
+		call	set_power_led_toggle		; Indicate IR reception
 
-	movlw	(IR_RECVR_BASE_ADDR>>8)		; Select high address
-	movwf	PCLATH				; For the next 'call'
+	movlw	(IR_RECVR_BASE_ADDR>>8)			; Select high address
+	movwf	PCLATH					; For the next 'call'
 	call	ir_receiver_interrupt_handler
-	clrf	PCLATH				; Clear high address for 'goto'
+	clrf	PCLATH					; Clear high address for 'goto'
+	goto	ISR_exit
+
+ISR_i2c_int
+	banksel	PIR1
+	btfss	PIR1, SSPIF				; Is this a SSP interrupt?
+		goto	ISR_Tmr2_int
+	movf	SSPCON, W				; Check this is a slave interrupt
+	andlw	I2C_SLAVE_SSPCON_SETUP_MASK
+	sublw	(I2C_SLAVE_SSPCON_SETUP & I2C_SLAVE_SSPCON_SETUP_MASK)
+	btfsc	STATUS, Z
+		goto	ISR_i2c_int_slave
+	bcf	PIR1, SSPIF
+	goto	ISR_exit
+
+ISR_i2c_int_slave
+	movlw	(I2C_SLAVE_BASE_ADDR>>8)		; Select high address
+	movwf	PCLATH					; For the next 'call'
+	call	i2c_slave_ssp_handler			; Service SSP interrupt. By skipping is this going to cause problems on bus collisions
+	clrf	PCLATH					; Clear high address for 'goto'
 	goto	ISR_exit
 
 ISR_Tmr2_int
 	banksel	PIR1
-	btfss	PIR1, TMR2IF			; Is this a Timer2 interrupt
-		goto	ISR_Ext_int		; If not go to next check
-	bcf	PIR1, TMR2IF			; Otherwise, clear the interrupt flag
+	btfss	PIR1, TMR2IF				; Is this a Timer2 interrupt
+		goto	ISR_Ext_int			; If not go to next check
+	bcf	PIR1, TMR2IF				; Otherwise, clear the interrupt flag
 	banksel	_mr_screen_buffer_update
-	bsf	_mr_screen_buffer_update, 0x0	; And mark the LCD for update
+	movf	_mr_screen_buffer_update, W		; Increment the screen update counter
+	andlw	0x7f					; Strip MSB (update disable bit)
+	xorwf	_mr_screen_buffer_update, F		; Clear the count
+	addlw	0x1					; Increment count
+	iorwf	_mr_screen_buffer_update, F		; Write count back
 	goto	ISR_exit
 
 ISR_Ext_int
@@ -137,14 +155,14 @@ ISR_Ext_int
 ISR_exit
 	banksel	FSRsave
 	movf	FSRsave, W
-	movwf	FSR				; Restore FSR
+	movwf	FSR					; Restore FSR
 	movf	PCLATHsave, W
-	movwf	PCLATH				; Restore PCLATH
+	movwf	PCLATH					; Restore PCLATH
 	swapf	STATUSsave, W
-	movwf	STATUS				; Restore STATUS
+	movwf	STATUS					; Restore STATUS
 	swapf	WREGsave, F
-	swapf	WREGsave, W			; Restore WREG
-	retfie					; Return from interrupt
+	swapf	WREGsave, W				; Restore WREG
+	retfie						; Return from interrupt
 
 ;***********************************************************************
 main
@@ -168,16 +186,18 @@ main_loop
 
 main_loop_update_lcd
 	banksel	_mr_screen_buffer_update
-	btfss	_mr_screen_buffer_update, 0x0		; Is there a screen update pending
+	btfsc	_mr_screen_buffer_update, 0x7		; Is the screen update disabled
 		goto	main_loop_read_inputs
-	btfsc	_mr_screen_buffer_update, 0x1		; Is the screen update disabled
+	movf	_mr_screen_buffer_update, W
+	sublw	0x3
+	btfsc	STATUS, C				; Divides the interrupt frequency by 4 (or there abouts) giving a refresh of 25 Hz
 		goto	main_loop_read_inputs
 	movlw	(LCD_BASE_ADDR>>8)			; Select high address
 	movwf	PCLATH					; For the next 'call'
 	call	LCD_UPDATE_FROM_SCREEN_BUFFER		; Write screen buffer to LCD
 	clrf	PCLATH
 	banksel	_mr_screen_buffer_update
-	bcf	_mr_screen_buffer_update, 0x0		; Clear screen update flag
+	clrf	_mr_screen_buffer_update		; Clear screen update counter
 
 main_loop_read_inputs
 	movlw	0x0f					; Select high address (includes the required offset for the add in the routine)
@@ -185,11 +205,27 @@ main_loop_read_inputs
 	banksel	_mr_ir_receiver_command_actual
 	movf	_mr_ir_receiver_command_actual, W	; Get IR command data
 	call	ir_receiver_bc_2_cmd_table		; Translate IR to function code
-	movwf	_mr_cmd_cur
+	movwf	_mr_cmd_ir
 	clrf	PCLATH					; Clear the PCLATH
 
 	call	read_buttons				; Check buttons
 	call	buttons_2_command			; Translate button presses to function code
+
+main_loop_update_command_from_buttons
+	movf	_mr_cmd_buttons, W
+	btfsc	STATUS, Z
+		goto	main_loop_update_command_from_ir
+	movwf	_mr_cmd_cur
+	goto	main_loop_update_command_done
+main_loop_update_command_from_ir
+	movf	_mr_cmd_ir, W
+	btfsc	STATUS, Z
+		goto	main_loop_update_command_clear
+	movwf	_mr_cmd_cur
+	goto	main_loop_update_command_done
+main_loop_update_command_clear
+	clrf	_mr_cmd_cur
+main_loop_update_command_done
 
 ;***********************************************************************
 ;***********************************************************************
@@ -466,6 +502,7 @@ mode_poweron_set
 	return
 
 mode_poweron_init
+	call	i2c_master_init
 	call	lcd_backlight_contrast_settings_restore		; Restore before we become a slave
 	call	set_online_led_off
 	call	set_mpu_as_i2c_slave				; Reset SSP as i2c slave and enable interrupts
@@ -475,13 +512,13 @@ mode_poweron_init
 
 	movlw	_mr_screen_buffer_line2 + 3			; Write 'PiAdagio Sound' in the screen buffer (line 2)
 	movwf	FSR
-	movlw	str_panel_title1 - STR_PANEL_BASE_ADDR
-	call	screen_write_flash_2_buffer_panel_str
+	movlw	str_panel_title1 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	movlw	_mr_screen_buffer_line3 + 7			; Write 'Server' in the screen buffer (line 3)
 	movwf	FSR
-	movlw	str_panel_title2 - STR_PANEL_BASE_ADDR
-	call	screen_write_flash_2_buffer_panel_str
+	movlw	str_panel_title2 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	banksel	_mr_mode_prev
 	movlw	MODE_POWERON
@@ -490,140 +527,179 @@ mode_poweron_init
 
 ; Process command
 fp_cmd_process
-;	bcf	INTCON,GIE					; Disable interrupts while we are processing
-;
-;	btfss	_mr_i2c_cmd_status, FP_CMD_STATUS_LOADING
-;		goto	fp_cmd_process_exit			; Skip if there isn't a command pending
-;	btfsc	_mr_i2c_cmd_status, FP_CMD_STATUS_PROCESSED
-;		goto	fp_cmd_process_exit			; Skip if the command has been processed
-;	btfss	_mr_i2c_cmd_status, FP_CMD_STATUS_LOADED
-;		goto	fp_cmd_process_exit			; Skip if the command hasn't finished loading
-;
-;	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_PROCESSING	; Mark command as being processed
-;
-;	btfsc	_mr_i2c_buffer, FP_CMD_CLEAR_SCREEN		; Clear screen command
-;		goto 	fp_cmd_process_clear_screen
-;	btfsc	_mr_i2c_buffer, FP_CMD_WRITE_SCREEN		; Write screen command
-;		goto	fp_cmd_process_write_screen
-;
-;	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_PROCESSED	; Mark command as processed anyway to clear it
-;
-;fp_cmd_process_exit
-;	call	i2c_slave_clear_overflow			; Flush any i2c overflow condition
-;
-;	bsf	INTCON,GIE					; Re-enable interrupts
+	btfss	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_LOADING
+		goto	fp_cmd_process_exit				; Skip if there isn't a command pending
+	btfsc	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED
+		goto	fp_cmd_process_exit				; Skip if the command has been processed
+	btfss	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_LOADED
+		goto	fp_cmd_process_exit				; Skip if the command hasn't finished loading
+
+	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSING	; Mark command as being processed
+
+	btfsc	_mr_i2c_buffer, FP_CMD_BIT_CLEAR_SCREEN			; Clear screen command
+		goto 	fp_cmd_process_clear_screen
+	btfsc	_mr_i2c_buffer, FP_CMD_BIT_WRITE_SCREEN			; Write screen command
+		goto	fp_cmd_process_write_screen
+	btfsc	_mr_i2c_buffer, FP_CMD_BIT_LED				; LED control command
+		goto	fp_cmd_process_led_control
+
+	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED		; Mark command as done anyway
+
+fp_cmd_process_exit
+	btfsc	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED		; If the command has been processed,
+		clrf	_mr_i2c_cmd_status				; clear command
 	return
 
 ;***********************************************************************
 ; Process command - Clear screen
-;fp_cmd_process_clear_screen
-;	call	LCD_PORT_CONFIGURE
-;
-;	btfss	_mr_i2c_cmd_size, 0x01				; Is this command 2 or more bytes
-;		goto	fp_cmd_process_clear_whole_screen	; Only 1 command byte, so clear all the screen
-;
-;	clrw							; First reset screen clear position
-;	btfsc	(_mr_i2c_buffer + 1), 0x01
-;		goto	fp_cmd_process_clear_screen_row_gt_2	; Row selection is greater than or equal to 2
-;	btfsc	(_mr_i2c_buffer + 1), 0x00
-;		addlw	SCR_ROW1				; Row 1	selected
-;	goto	fp_cmd_process_clear_screen_next
-;fp_cmd_process_clear_screen_row_gt_2
-;	addlw	SCR_ROW2
-;	btfsc	(_mr_i2c_buffer + 1), 0x00
-;		addlw	SCR_ROW1				; With SCR_ROW2 produces SCR_ROW3
-;
-;fp_cmd_process_clear_screen_next
-;	movwf	_mr_lcd_screen_pos				; Save selected row
-;	movlw	0x14
-;	movwf	_mr_lcd_clear_chars				; Set the default number of characters to clear
-;
-;	btfss	_mr_i2c_cmd_size, 0x00
-;		goto	fp_cmd_process_clear_screen_portion
-;
-;	rrf	(_mr_i2c_buffer + 1), F				; Now get column data
-;	rrf	(_mr_i2c_buffer + 1), W				; Now get column data
-;	andlw	b'00111111'
-;	addwf	_mr_lcd_screen_pos, F					; Add the column data to the selected row
-;	movf	(_mr_i2c_buffer + 2), W				; Get the number of characters to clear
-;	movwf	_mr_lcd_clear_chars
-;
-;fp_cmd_process_clear_screen_portion
-;	movf	_mr_lcd_screen_pos, W
-;	iorlw	LCD_CMD_SET_DDRAM				; Set the command bits
-;	call	LCD_WRITE_CMD
-;	call	LCD_CLEAR_CHARS
-;	goto	fp_cmd_process_clear_screen_finish
-;
-;fp_cmd_process_clear_whole_screen
-;	call	LCD_CLEAR_SCREEN
-;
-;fp_cmd_process_clear_screen_finish
-;	call	LCD_PORT_RESTORE
-;	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_PROCESSED	; Mark command as processed
-;
-;	goto	fp_cmd_process
-;
+fp_cmd_process_clear_screen
+	btfss	_mr_i2c_cmd_size, 0x01				; Is this command 2 or more bytes
+		goto	fp_cmd_process_clear_whole_screen	; Only 1 command byte, so clear all the screen
+
+	movlw	_mr_screen_buffer_line1				; First reset screen clear position
+	btfsc	(_mr_i2c_buffer + 1), 0x01
+		goto	fp_cmd_process_clear_screen_row_gt_2	; Row selection is greater than or equal to 2
+	btfsc	(_mr_i2c_buffer + 1), 0x00
+		movlw	_mr_screen_buffer_line2
+	goto	fp_cmd_process_clear_screen_next
+fp_cmd_process_clear_screen_row_gt_2
+	movlw	_mr_screen_buffer_line3
+	btfsc	(_mr_i2c_buffer + 1), 0x00
+		movlw	_mr_screen_buffer_line4
+
+fp_cmd_process_clear_screen_next
+	movwf	FSR						; Save screen position
+	movlw	0x14						; 20 characters
+
+	btfss	_mr_i2c_cmd_size, 0x00
+		goto	fp_cmd_process_clear_screen_portion
+
+	rrf	(_mr_i2c_buffer + 1), F				; Now get column data
+	rrf	(_mr_i2c_buffer + 1), W				; Now get column data
+	andlw	b'00111111'
+	addwf	FSR, F						; Add the column data to the selected row
+
+	movf	(_mr_i2c_buffer + 2), W				; Get the number of characters to clear
+
+fp_cmd_process_clear_screen_portion
+	banksel	_mr_screen_buffer_line1
+	movwf	_mr_lcd_temp
+fp_cmd_process_clear_screen_portion_loop
+	movlw	_mr_screen_buffer_line1 + 80			; 80 character display
+	subwf	FSR, W						; Check for buffer overflow
+	btfsc	STATUS, C
+		goto	fp_cmd_process_clear_screen_finish
+
+	movlw	' '
+	movwf	INDF						; Write space
+	incf	FSR, F						; increment pointer
+
+	decfsz	_mr_lcd_temp, F					; Decrement character count
+		goto	fp_cmd_process_clear_screen_portion_loop
+	goto	fp_cmd_process_clear_screen_finish
+
+fp_cmd_process_clear_whole_screen
+	call	screen_clear
+
+fp_cmd_process_clear_screen_finish
+	banksel	_mr_i2c_cmd_status
+	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED	; Mark command as processed
+
+	goto	fp_cmd_process
+
 ;***********************************************************************
 ; Process command - Write to screen
-;fp_cmd_process_write_screen
-;	call	LCD_PORT_CONFIGURE
-;
-;	movf	_mr_i2c_cmd_size, w				; Check for invalid command
-;	xorlw	b'00000001'
-;	btfsc	STATUS, Z
-;		goto	fp_cmd_process_write_screen_finish	; Improper command
-;
-;	movf	_mr_i2c_cmd_size, w				; Check for single character write
-;	xorlw	b'00000010'
-;	btfsc	STATUS, Z
-;		goto	fp_cmd_process_write_screen_write_char
-;
-;	clrw							; First reset screen position
-;	btfsc	(_mr_i2c_buffer + 1), 0x01
-;		goto	fp_cmd_process_write_screen_row_gt_2	; Row selection is greater than or equal to 2
-;	btfsc	(_mr_i2c_buffer + 1), 0x00
-;		addlw	SCR_ROW1				; Row 1	selected
-;	goto	fp_cmd_process_write_screen_next
-;fp_cmd_process_write_screen_row_gt_2
-;	addlw	SCR_ROW2
-;	btfsc	(_mr_i2c_buffer + 1), 0x00
-;		addlw	SCR_ROW1				; With SCR_ROW2 produces SCR_ROW3
-;
-;fp_cmd_process_write_screen_next
-;	movwf	_mr_lcd_screen_pos				; Save selected row
-;	rrf	(_mr_i2c_buffer + 1), F				; Now get column data
-;	rrf	(_mr_i2c_buffer + 1), W				; Now get column data
-;	andlw	b'00111111'
-;	addwf	_mr_lcd_screen_pos, F				; Add the column data to the selected row
-;	movf	_mr_lcd_screen_pos, W
-;	iorlw	LCD_CMD_SET_DDRAM				; Set the command bits
-;	call	LCD_WRITE_CMD					; Set screen position
-;
-;	movlw	0x02						; Update command size to represent character data size
-;	subwf	_mr_i2c_cmd_size, F
-;
-;	clrf	_mr_i2c_buffer_index				; Reset pointer to use to load data out
-;fp_cmd_process_write_screen_next_char
-;	movlw	(_mr_i2c_buffer + 2)				; Set the start of the character data
-;	addwf	_mr_i2c_buffer_index, W
-;	movwf	FSR
-;	movf	INDF, W
-;	call	LCD_WRITE_DATA					; Write character to screen
-;	incf	_mr_i2c_buffer_index, F
-;	decfsz	_mr_i2c_cmd_size, F
-;		goto	fp_cmd_process_write_screen_next_char
-;	goto	fp_cmd_process_write_screen_finish
-;
-;fp_cmd_process_write_screen_write_char
-;	movf	(_mr_i2c_buffer + 1), W
-;	call	LCD_WRITE_DATA
-;
-;fp_cmd_process_write_screen_finish
-;	call	LCD_PORT_RESTORE
-;	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_PROCESSED	; Mark command as processed
-;
-;	GOTO fp_cmd_process
+fp_cmd_process_write_screen
+	movf	_mr_i2c_cmd_size, w				; Check for invalid command
+	xorlw	b'00000001'
+	btfsc	STATUS, Z
+		goto	fp_cmd_process_write_screen_finish	; Improper command
+
+	movf	_mr_i2c_cmd_size, w				; Check for invalid command
+	xorlw	b'00000010'
+	btfsc	STATUS, Z
+		goto	fp_cmd_process_write_screen_finish	; Improper command
+
+	movlw	_mr_screen_buffer_line1				; First reset screen position
+	btfsc	(_mr_i2c_buffer + 1), 0x01
+		goto	fp_cmd_process_write_screen_row_gt_2	; Row selection is greater than or equal to 2
+	btfsc	(_mr_i2c_buffer + 1), 0x00
+		movlw	_mr_screen_buffer_line2			; Row 1	selected
+	goto	fp_cmd_process_write_screen_next
+fp_cmd_process_write_screen_row_gt_2
+	movlw	_mr_screen_buffer_line3
+	btfsc	(_mr_i2c_buffer + 1), 0x00
+		movlw	_mr_screen_buffer_line4
+
+fp_cmd_process_write_screen_next
+	banksel	_mr_lcd_loop
+	movwf	_mr_lcd_loop					; Save screen position
+	banksel	_mr_i2c_buffer
+	rrf	(_mr_i2c_buffer + 1), F				; Now get column data
+	rrf	(_mr_i2c_buffer + 1), W				; Now get column data
+	andlw	b'00111111'
+	banksel	_mr_lcd_loop
+	addwf	_mr_lcd_loop, F					; Add the column data to the selected row
+
+	banksel	_mr_i2c_cmd_size
+	movlw	0x02						; Update command size to represent character data size
+	subwf	_mr_i2c_cmd_size, F
+
+	clrf	_mr_i2c_temp					; Reset pointer to use to load data out
+fp_cmd_process_write_screen_char_loop
+	movlw	(_mr_i2c_buffer + 2)				; Set the start of the character data
+	addwf	_mr_i2c_temp, W					; Work out offset
+	movwf	FSR
+	movf	INDF, W						; Get character
+
+	banksel	_mr_lcd_temp
+	movwf	_mr_lcd_temp					; Save character
+
+	movlw	_mr_screen_buffer_line1 + 80			; 80 character display
+	subwf	_mr_lcd_loop, W					; Check for buffer overflow
+	btfsc	STATUS, C
+		goto	fp_cmd_process_write_screen_finish
+
+	movf	_mr_lcd_loop, W					; Get screen pointer
+	movwf	FSR						; Load in to FSR
+	movf	_mr_lcd_temp, W					; Get saved character
+	movwf	INDF						; Save to screen
+
+	incf	_mr_lcd_loop, F					; Increment screen position
+
+	banksel	_mr_i2c_temp
+	incf	_mr_i2c_temp, F					; Increment buffer position
+	decfsz	_mr_i2c_cmd_size, F
+		goto	fp_cmd_process_write_screen_char_loop
+
+fp_cmd_process_write_screen_finish
+	banksel	_mr_i2c_cmd_status
+	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED	; Mark command as processed
+
+	goto	fp_cmd_process
+
+;***********************************************************************
+; Process command - LED control
+fp_cmd_process_led_control
+	movlw	0x2
+	subwf	_mr_i2c_cmd_size, W				; Check command size
+	btfss	STATUS, Z
+		goto	fp_cmd_process_led_control_finish
+
+	btfss	(_mr_i2c_buffer + 1), FP_CMD_LED_BIT_POWER
+		call	set_power_led_off
+	btfsc	(_mr_i2c_buffer + 1), FP_CMD_LED_BIT_POWER
+		call	set_power_led_on
+	btfss	(_mr_i2c_buffer + 1), FP_CMD_LED_BIT_ONLINE
+		call	set_online_led_off
+	btfsc	(_mr_i2c_buffer + 1), FP_CMD_LED_BIT_ONLINE
+		call	set_online_led_on
+
+fp_cmd_process_led_control_finish
+	banksel	_mr_i2c_cmd_status
+	bsf	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_PROCESSED	; Mark command as processed
+
+	goto	fp_cmd_process
 
 ;***********************************************************************
 ; Mode: Test Mode
@@ -644,6 +720,7 @@ mode_testfp_set
 ; Initialise test mode
 ;
 mode_testfp_init
+	call	i2c_master_init
 	call	lcd_backlight_contrast_settings_restore
 	call	screen_clear					; Clear screen buffer
 	call	set_online_led_on
@@ -822,8 +899,8 @@ mode_testfp_display_tests_screen1_line1
 mode_testfp_display_tests_screen1_line1_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	str_tests_tmode0 - STR_TESTS_BASE_ADDR		; Subtract STR_TESTS_BASE_ADDR to get the offset
-	call	screen_write_flash_2_buffer_tests_str			; Write string
+	movlw	str_tests_tmode0 - STRINGS_BASE_ADDR		; Subtract STRINGS_BASE_ADDR to get the offset
+	call	screen_write_flash_str_2_buffer			; Write string
 
 mode_testfp_display_tests_screen1_line2
 	movlw	_mr_screen_buffer_line2 + 1			; Select line 2, 2nd character
@@ -839,8 +916,8 @@ mode_testfp_display_tests_screen1_line2
 mode_testfp_display_tests_screen1_line2_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	str_tests_tmode1 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_tmode1 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 mode_testfp_display_tests_screen1_line3
 	movlw	_mr_screen_buffer_line3 + 1			; Select line 3, 2nd character
@@ -856,8 +933,8 @@ mode_testfp_display_tests_screen1_line3
 mode_testfp_display_tests_screen1_line3_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	str_tests_tmode2 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_tmode2 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 mode_testfp_display_tests_screen1_line4
 	movlw	_mr_screen_buffer_line4 + 1			; Select line 4, 2nd character
@@ -873,8 +950,8 @@ mode_testfp_display_tests_screen1_line4
 mode_testfp_display_tests_screen1_line4_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	str_tests_tmode3 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_tmode3 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	goto	mode_testfp_display_tests_exit
 
@@ -892,8 +969,8 @@ mode_testfp_display_tests_screen2_line1
 mode_testfp_display_tests_screen2_line1_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	str_tests_tmode4 - STR_TESTS_BASE_ADDR		; Subtract STR_TESTS_BASE_ADDR to get the offset
-	call	screen_write_flash_2_buffer_tests_str			; Write string
+	movlw	str_tests_tmode4 - STRINGS_BASE_ADDR		; Subtract STRINGS_BASE_ADDR to get the offset
+	call	screen_write_flash_str_2_buffer			; Write string
 
 mode_testfp_display_tests_screen2_line2
 	movlw	_mr_screen_buffer_line2 + 1			; Select line 2, 2nd character
@@ -909,8 +986,8 @@ mode_testfp_display_tests_screen2_line2
 mode_testfp_display_tests_screen2_line2_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	str_tests_tmode5 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_tmode5 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 ;mode_testfp_display_tests_screen2_line3
 ;	movlw	_mr_screen_buffer_line3 + 1			; Select line 3, 2nd character
@@ -926,8 +1003,8 @@ mode_testfp_display_tests_screen2_line2_txt
 ;mode_testfp_display_tests_screen2_line3_txt
 ;	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 ;	addwf	FSR, F
-;	movlw	str_tests_tmode6 - STR_TESTS_BASE_ADDR
-;	call	screen_write_flash_2_buffer_tests_str
+;	movlw	str_tests_tmode6 - STRINGS_BASE_ADDR
+;	call	screen_write_flash_str_2_buffer
 
 ;mode_testfp_display_tests_screen2_line4
 ;	movlw	_mr_screen_buffer_line4 + 1			; Select line 4, 2nd character
@@ -943,8 +1020,8 @@ mode_testfp_display_tests_screen2_line2_txt
 ;mode_testfp_display_tests_screen2_line4_txt
 ;	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 ;	addwf	FSR, F
-;	movlw	str_tests_tmode7 - STR_TESTS_BASE_ADDR
-;	call	screen_write_flash_2_buffer_tests_str
+;	movlw	str_tests_tmode7 - STRINGS_BASE_ADDR
+;	call	screen_write_flash_str_2_buffer
 
 	goto	mode_testfp_display_tests_exit
 
@@ -962,8 +1039,8 @@ mode_testfp_test_buttons
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR
 
-	movlw	str_tests_bank - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_bank - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	movlw	'1'
 	call	screen_write_char
 	movlw	':'
@@ -974,8 +1051,8 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line1 + 10
 	movwf	FSR
-	movlw	str_tests_bank - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_bank - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	movlw	'2'
 	call	screen_write_char
 	movlw	':'
@@ -986,8 +1063,8 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR
-	movlw	str_tests_bank - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_bank - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	movlw	'3'
 	call	screen_write_char
 	movlw	':'
@@ -998,8 +1075,8 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR
-	movlw	str_tests_fp_cmd - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_fp_cmd - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, W
 	call	screen_write_byte_as_hex
@@ -1017,26 +1094,26 @@ mode_testfp_test_lcd
 mode_testfp_test_lcd_line1
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR					; Configure FSR to point to line 1
-	movlw	str_tests_lcd_line1 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_lcd_line1 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 mode_testfp_test_lcd_line2
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR					; Configure FSR to point to line 2
-	movlw	str_tests_lcd_line2 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_lcd_line2 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 mode_testfp_test_lcd_line3
 	movlw	_mr_screen_buffer_line3
 	movwf	FSR					; Configure FSR to point to line 3
-	movlw	str_tests_lcd_line3 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_lcd_line3 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 mode_testfp_test_lcd_line4
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR					; Configure FSR to point to line 4
-	movlw	str_tests_lcd_line4 - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_lcd_line4 - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	return
 
@@ -1055,8 +1132,8 @@ mode_testfp_test_ir
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR
 
-	movlw	str_tests_rcvd_addr - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_rcvd_addr - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	banksel	_mr_ir_receiver_address_msb
 	movf	_mr_ir_receiver_address_msb, W
 	call    screen_write_byte_as_hex
@@ -1076,8 +1153,8 @@ mode_testfp_test_ir
 
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR
-	movlw	str_tests_rcvd_cmd - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_rcvd_cmd - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	banksel	_mr_ir_receiver_command
 	movf	_mr_ir_receiver_command, W
 	call    screen_write_byte_as_hex
@@ -1092,8 +1169,8 @@ mode_testfp_test_ir
 
 	movlw	_mr_screen_buffer_line3
 	movwf	FSR
-	movlw	str_tests_err_cnt - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_err_cnt - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	banksel	_mr_ir_receiver_error_count
 	movf	_mr_ir_receiver_error_count, W
 	call    screen_write_byte_as_hex
@@ -1117,16 +1194,16 @@ mode_testfp_test_ir
 
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR
-	movlw	str_tests_cmd - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_cmd - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	banksel	_mr_ir_receiver_command_actual
 	movf	_mr_ir_receiver_command_actual, W
 	call    screen_write_byte_as_hex
 
 	movlw	_mr_screen_buffer_line4 + 10
 	movwf	FSR
-	movlw	str_tests_fp_cmd - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_fp_cmd - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, W
 	call    screen_write_byte_as_hex
@@ -1188,8 +1265,8 @@ mode_testfp_test_pwr_cntrls
 mode_testfp_test_pwr_cntrls_power
 	movlw	_mr_screen_buffer_line1 + 4
 	movwf	FSR
-	movlw	str_tests_power - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_power - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	movlw	_mr_screen_buffer_line1 + 16
 	movwf	FSR
@@ -1225,8 +1302,8 @@ mode_testfp_test_pwr_cntrls_power_value
 mode_testfp_test_pwr_cntrls_reset
 	movlw	_mr_screen_buffer_line2 + 4
 	movwf	FSR
-	movlw	str_tests_reset - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_reset - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	movlw	_mr_screen_buffer_line2 + 16
 	movwf	FSR
@@ -1262,8 +1339,8 @@ mode_testfp_test_pwr_cntrls_reset_value
 mode_testfp_test_pwr_cntrls_shutdown
 	movlw	_mr_screen_buffer_line3 + 4
 	movwf	FSR
-	movlw	str_tests_shutdown - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_shutdown - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	movlw	_mr_screen_buffer_line3 + 16
 	movwf	FSR
@@ -1356,8 +1433,8 @@ mode_testfp_test_i2c_master
 mode_testfp_test_i2c_master_backlight
 	movlw	_mr_screen_buffer_line1 + 4
 	movwf	FSR
-	movlw	str_tests_backlight - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_backlight - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	movlw	_mr_screen_buffer_line1 + 16
 	movwf	FSR
@@ -1386,8 +1463,8 @@ mode_testfp_test_i2c_master_backlight_value
 mode_testfp_test_i2c_master_contrast
 	movlw	_mr_screen_buffer_line3 + 4
 	movwf	FSR
-	movlw	str_tests_contrast - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_contrast - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	movlw	_mr_screen_buffer_line3 + 16
 	movwf	FSR
@@ -1434,6 +1511,10 @@ mode_testfp_test_i2c_master_process_cmd_select
 	sublw	CMD_SELECT
 	btfsc	STATUS, Z				; Check for a select command
 		call	mode_testfp_toggle_subtest_select
+	movf	_mr_cmd_cur, W
+	sublw	CMD_EJECT
+	btfsc	STATUS, Z				; Check for a eject command
+		call	lcd_backlight_contrast_settings_restore
 
 mode_testfp_test_i2c_master_check
 	banksel	_mr_test_select
@@ -1459,8 +1540,8 @@ mode_testfp_test_i2c_slave
 mode_testfp_test_i2c_slave_run
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR
-	movlw	str_tests_sspcon - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_sspcon - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	banksel	SSPCON
 	movf	SSPCON, W
@@ -1473,8 +1554,8 @@ mode_testfp_test_i2c_slave_run
 
 	movlw	_mr_screen_buffer_line1 + 12
 	movwf	FSR
-	movlw	str_tests_sspstat - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_sspstat - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	banksel	SSPSTAT
 	movf	SSPSTAT, W
@@ -1482,8 +1563,8 @@ mode_testfp_test_i2c_slave_run
 
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR
-	movlw	str_tests_size - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_size - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	banksel	_mr_i2c_cmd_size
 	movf	_mr_i2c_cmd_size, W
@@ -1491,8 +1572,8 @@ mode_testfp_test_i2c_slave_run
 
 	movlw	_mr_screen_buffer_line2 + 6
 	movwf	FSR
-	movlw	str_tests_rx_tx_err - STR_TESTS_BASE_ADDR
-	call	screen_write_flash_2_buffer_tests_str
+	movlw	str_tests_rx_tx_err - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	banksel	_mr_i2c_rx_count
 	movf	_mr_i2c_rx_count, W
@@ -1541,14 +1622,14 @@ mode_testfp_test_i2c_slave_buffer_read
 	goto	mode_testfp_test_i2c_slave_buffer_read
 
 mode_testfp_test_i2c_slave_process_cmd
-	banksel	_mr_cmd_cur
-	movf	_mr_cmd_cur, W
-	subwf	_mr_cmd_prev, F
-	btfsc	STATUS, Z				; Check for a change of command state
-		goto	mode_testfp_test_i2c_slave_exit
-	sublw	CMD_PAUSE
-	btfsc	STATUS, Z				; Check for a pause command
-		call	i2c_slave_toggle_clock_stretch	; Disable i2c clock (SCL) line
+;	banksel	_mr_cmd_cur
+;	movf	_mr_cmd_cur, W
+;	subwf	_mr_cmd_prev, F
+;	btfsc	STATUS, Z				; Check for a change of command state
+;		goto	mode_testfp_test_i2c_slave_exit
+;	sublw	CMD_PAUSE
+;	btfsc	STATUS, Z				; Check for a pause command
+;		call	i2c_slave_toggle_clock_stretch	; Disable i2c clock (SCL) line
 
 mode_testfp_test_i2c_slave_exit
 	return
@@ -1568,10 +1649,10 @@ mode_powercontrol_init
 	movwf	_mr_pwrctrl_select
 
 	banksel	_mr_screen_buffer_update
-	bsf	_mr_screen_buffer_update, 0x1			; Disable screen updates from buffer
+	bsf	_mr_screen_buffer_update, 0x7			; Disable screen updates from buffer
 
-	movlw	(LCD_BASE_ADDR>>8)		; Select high address
-	movwf	PCLATH				; For the next 'call'
+	movlw	(LCD_BASE_ADDR>>8)				; Select high address
+	movwf	PCLATH						; For the next 'call'
 	call	LCD_PORT_CONFIGURE
 	call	LCD_CLEAR_SCREEN				; Clear screen
 	call	LCD_PORT_RESTORE
@@ -1589,9 +1670,13 @@ mode_powercontrol_init
 ;
 mode_powercontrol_update_display
 	banksel	_mr_screen_buffer_update
-	btfss	_mr_screen_buffer_update, 0x0			; Check if the lcd should be updated
+	movf	_mr_screen_buffer_update, W
+	andlw	0x7f						; Stip MSB (screen update disable bit)
+	sublw	0x3
+	btfsc	STATUS, C					; Check if the lcd should be updated
 		goto	mode_powercontrol_update_display_exit
-	bcf	_mr_screen_buffer_update, 0x0
+	movlw	0x80
+	andwf	_mr_screen_buffer_update, F			; Clear count
 
 	movlw	(LCD_BASE_ADDR>>8)		; Select high address
 	movwf	PCLATH				; For the next 'call'
@@ -1686,7 +1771,7 @@ mode_powercontrol_back_2_poweron
 	movwf	_mr_mode_prev					; Updated to avoid the init routine
 
 	banksel	_mr_screen_buffer_update
-	bcf	_mr_screen_buffer_update, 0x1			; Enable screen updates
+	bcf	_mr_screen_buffer_update, 0x7			; Enable screen updates
 
 	return
 
@@ -1723,7 +1808,7 @@ mode_powercontrol_control_exec_poweroff
 		goto	mode_powercontrol_control_exec_exit
 	call	mode_poweroff_set
 	banksel	_mr_screen_buffer_update
-	bcf	_mr_screen_buffer_update, 0x1			; Enable screen updates
+	bcf	_mr_screen_buffer_update, 0x7			; Enable screen updates
 	goto	mode_powercontrol_control_exec_exit
 
 mode_powercontrol_control_exec_exit
@@ -1736,7 +1821,10 @@ mode_powercontrol_control_exec_exit
 ;***********************************************************************
 ; Reset the i2c interface as a slave
 set_mpu_as_i2c_slave
+	movlw	(I2C_SLAVE_BASE_ADDR>>8)			; Select high address
+	movwf	PCLATH						; For the next 'call'
 	call	i2c_slave_init
+	clrf	PCLATH						; Clear high address for 'goto'
 
 	bsf	INTCON,PEIE 					; Enable all peripheral interrupts
 	bsf	INTCON,GIE					; Enable global interrupts
@@ -1949,17 +2037,17 @@ screen_draw_border
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR
 
-	movlw	str_panel_border_full - STR_PANEL_BASE_ADDR
-	call	screen_write_flash_2_buffer_panel_str
+	movlw	str_panel_border_full - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
-	movlw	str_panel_border_edges - STR_PANEL_BASE_ADDR
-	call	screen_write_flash_2_buffer_panel_str
+	movlw	str_panel_border_edges - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
-	movlw	str_panel_border_edges - STR_PANEL_BASE_ADDR
-	call	screen_write_flash_2_buffer_panel_str
+	movlw	str_panel_border_edges - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
-	movlw	str_panel_border_full - STR_PANEL_BASE_ADDR
-	call	screen_write_flash_2_buffer_panel_str
+	movlw	str_panel_border_full - STRINGS_BASE_ADDR
+	call	screen_write_flash_str_2_buffer
 
 	return
 
@@ -2065,6 +2153,8 @@ init_mem
 	clrf	_mr_test_select					; Test mode, selected test
 	clrf	_mr_pwrctrl_select				; Power control, selected shutdown method
 
+	clrf	_mr_i2c_cmd_status
+
 	banksel	_mr_screen_buffer_update
 	clrf	_mr_screen_buffer_update			; Clear screen buffer related registers
 	clrf	_mr_screen_buffer_loop
@@ -2073,6 +2163,9 @@ init_mem
 	clrf	_mr_lcd_temp
 	clrf	_mr_lcd_delayloop1
 	clrf	_mr_lcd_delayloop2
+
+	movlw	0x6
+	movwf	_mr_lcd_enable_delay				; Time delayed needed for the LCD enable line to register
 
 	clrf	_mr_oldxtris					; Clear the TRIS save registers
 	clrf	_mr_oldytris
@@ -2127,13 +2220,13 @@ waste_time_l1
 
 	include "buttons.asm"
 	include "i2c_master.asm"
-	include "i2c_slave.asm"
 	include	"pic_eeprom.asm"
 	include	"screen.asm"
 	include "commands.asm"
 
-	include "lcd.asm"				; This has a fixed location, so needs to be loaded last
 	include	"ir_receiver.asm"			; This has a fixed location, so needs to be loaded last
+	include "lcd.asm"				; This has a fixed location, so needs to be loaded last
+	include "i2c_slave.asm"				; This has a fixed location, so needs to be loaded last
 	include	"strings.asm"				; This has a fixed location, so needs to be loaded last
 	include	"jmp_tables.asm"			; This has a table at a fixed location, so needs to be loaded last
 
@@ -2144,9 +2237,9 @@ waste_time_l1
 ;***********************************************************************
 .eedata	org	0x2100
 eeprom_lcd_contrast	de	0x00
-eeprom_lcd_backlight	de	0x7f
-eeprom_ir_addr_lsb	de	0x24
-eeprom_ir_addr_msb	de	0x42
+eeprom_lcd_backlight	de	0x60
+eeprom_ir_addr_lsb	de	0x02
+eeprom_ir_addr_msb	de	0xFC
 eeprom_str_poweroff	de	"Power Off\0"
 eeprom_str_reset	de	"Hard Reset\0"
 eeprom_str_shutdown	de	"Shutdown\0"

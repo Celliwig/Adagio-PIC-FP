@@ -1,46 +1,49 @@
+	org	I2C_SLAVE_BASE_ADDR
+
 ;---------------------------------------------------------------------
 ; Initializes program variables and peripheral registers.
 ;---------------------------------------------------------------------
 i2c_slave_init
 	banksel	TRISC
-	bsf     TRISC, 0x03						; Set the ports as inputs
-	bsf     TRISC, 0x04
+	bsf	TRISC, 0x03						; Set the ports as inputs
+	bsf	TRISC, 0x04
 
-	movlw   NODE_ADDR						; Set slave address
-	movwf   SSPADD
+	movlw	NODE_ADDR						; Set slave address
+	movwf	SSPADD
 
-	clrf    SSPSTAT
-	bsf     SSPSTAT, 0x07						; Slew rate control disabled for standard speed mode (100 kHz and 1 MHz)
+	clrf	SSPSTAT
+	bsf	SSPSTAT, 0x07						; Slew rate control disabled for standard speed mode (100 kHz and 1 MHz)
 
-	bsf     PIE1,SSPIE						; Enable SSP interrupt
+	bsf	PIE1,SSPIE						; Enable SSP interrupt
 
 	banksel	PIR1
 	bcf	PIR1, SSPIF						; Clear SSP interrupt
 
 	clrf	SSPCON							; Disable SSP to force reinitialisation
-	movlw   0x36							; Setup SSP module for 7-bit address, slave mode
-	movwf   SSPCON
+	movlw	I2C_SLAVE_SSPCON_SETUP					; Setup SSP module for 7-bit address, slave mode
+	movwf	SSPCON
 
 	clrf	_mr_i2c_state						; Reset state
 	clrf	_mr_i2c_rx_count					; Reset counters
 	clrf	_mr_i2c_tx_count
 	clrf	_mr_i2c_err_count
+	clrf	_mr_i2c_cmd_status
 
 	return
 
-;-----------------------------------------------------------------------------------------------
-; i2c slave toggles the CKP bit (used for testing)
-;-----------------------------------------------------------------------------------------------
-i2c_slave_toggle_clock_stretch
-	banksel	SSPCON
-	btfsc	SSPCON, CKP
-		goto	i2c_slave_toggle_clock_stretch_low
-	bsf	SSPCON, CKP
-	goto	i2c_slave_toggle_clock_stretch_exit
-i2c_slave_toggle_clock_stretch_low
-	bcf	SSPCON, CKP
-i2c_slave_toggle_clock_stretch_exit
-	return
+;;-----------------------------------------------------------------------------------------------
+;; i2c slave toggles the CKP bit (used for testing)
+;;-----------------------------------------------------------------------------------------------
+;i2c_slave_toggle_clock_stretch
+;	banksel	SSPCON
+;	btfsc	SSPCON, CKP
+;		goto	i2c_slave_toggle_clock_stretch_low
+;	bsf	SSPCON, CKP
+;	goto	i2c_slave_toggle_clock_stretch_exit
+;i2c_slave_toggle_clock_stretch_low
+;	bcf	SSPCON, CKP
+;i2c_slave_toggle_clock_stretch_exit
+;	return
 
 ;-----------------------------------------------------------------------------------------------
 ; i2c slave Interrupt Service Routine (ISR)
@@ -49,6 +52,20 @@ i2c_slave_ssp_handler
 	banksel	PIR1
 	bcf 	PIR1, SSPIF						; clear the SSP interrupt flag
 
+	btfss	SSPCON, SSPOV
+		goto	i2c_slave_ssp_handler_sspov_clear
+
+	bcf	SSPCON, SSPOV						; clear overflow condition
+	btfss	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_LOADED		; if the buffer is in an undefined state
+		clrf	_mr_i2c_cmd_status				; clear command (it's incomplete)
+	clrf	_mr_i2c_state						; clear state
+	bsf	_mr_i2c_state, I2C_SLAVE_STATE_BIT_ERROR
+	incf	_mr_i2c_err_count, F
+
+	movf	SSPBUF, W						; dummy read
+	return
+
+i2c_slave_ssp_handler_sspov_clear
 	banksel	SSPSTAT
 	btfsc	SSPSTAT, 5						; was last byte an address or data?
 		goto	i2c_slave_ssp_handler_active
@@ -61,9 +78,17 @@ i2c_slave_ssp_handler
 
 i2c_slave_ssp_handler_active
 	banksel	_mr_i2c_state
+	btfsc	_mr_i2c_state, I2C_SLAVE_STATE_BIT_ERROR
+		goto	i2c_slave_ssp_handler_active_error_exit
+
 	btfsc	_mr_i2c_state, I2C_SLAVE_STATE_BIT_READ_NOT_WRITE
 		goto	i2c_slave_ssp_handler_master_read
 	goto	i2c_slave_ssp_handler_master_write
+
+i2c_slave_ssp_handler_active_error_exit
+	movf	SSPBUF, W						; dummy read
+	bsf	SSPCON, CKP						; just in case
+	return
 
 ;-----------------------------------------------------------------------------------------------
 ; i2c slave (Master read)
@@ -78,6 +103,9 @@ i2c_slave_ssp_handler_master_read
 	incf	_mr_i2c_tx_count, F
 
 	movf	_mr_cmd_cur, W						; move command value into W to
+	btfss	_mr_i2c_state, I2C_SLAVE_STATE_BIT_READ_STATUS
+		movf	_mr_i2c_cmd_status, W
+	bsf	_mr_i2c_state, I2C_SLAVE_STATE_BIT_READ_STATUS
 
 	movwf	SSPBUF							; load SSP buffer
 	btfsc	SSPCON, WCOL						; did a write collision occur?
@@ -107,6 +135,8 @@ i2c_slave_ssp_handler_master_write
 
 i2c_slave_ssp_handler_master_write_address
 	movf	SSPBUF, W						; dummy read to clear the BF bit
+	btfsc	_mr_i2c_cmd_status, FP_CMD_STATUS_BIT_LOADED		; don't read in new data into the buffer
+		goto	i2c_slave_ssp_handler_master_write_address_exit	; if there is unprocessed data pending
 	bsf	_mr_i2c_state, I2C_SLAVE_STATE_BIT_DATA_NOT_ADDRESS
 
 	clrf	_mr_i2c_cmd_status
@@ -114,6 +144,7 @@ i2c_slave_ssp_handler_master_write_address
 	clrf	_mr_i2c_cmd_size
 	movlw	_mr_i2c_buffer
 	movwf	_mr_i2c_buffer_index					; Reset buffer pointer
+i2c_slave_ssp_handler_master_write_address_exit
 	return
 
 i2c_slave_ssp_handler_master_write_data
@@ -158,19 +189,19 @@ i2c_slave_ssp_handler_master_write_coll
 									; dummy read to clear the BF bit
 	return
 
-;---------------------------------------------------------------------
-; Clear an overflow condition
-;---------------------------------------------------------------------
-i2c_slave_clear_overflow
-	banksel	SSPCON
-	btfss	SSPCON, SSPOV						; Has an overflow occured
-		call	i2c_slave_clear_overflow_exit			; if so, clear it
-
-	movf	SSPBUF, W						; move SSP buffer to W
-									; dummy read to clear the BF bit
-	bcf	SSPCON, SSPOV						; clear overflow flag
-
-	bcf	PIR1, SSPIF						; clear the SSP interrupt flag
-
-i2c_slave_clear_overflow_exit
-	return
+;;---------------------------------------------------------------------
+;; Clear an overflow condition
+;;---------------------------------------------------------------------
+;i2c_slave_clear_overflow
+;	banksel	SSPCON
+;	btfss	SSPCON, SSPOV						; Has an overflow occured
+;		call	i2c_slave_clear_overflow_exit			; if so, clear it
+;
+;	movf	SSPBUF, W						; move SSP buffer to W
+;									; dummy read to clear the BF bit
+;	bcf	SSPCON, SSPOV						; clear overflow flag
+;
+;	bcf	PIR1, SSPIF						; clear the SSP interrupt flag
+;
+;i2c_slave_clear_overflow_exit
+;	return

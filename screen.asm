@@ -8,12 +8,15 @@
 ; Configures Timer2 to produce a 20 Hz interrupt to update the LCD.
 ; Timer2 used, this can preclude the use of the PIC as an SPI master.
 ;
-; Clock is 4MHz/ so instruction cycle is 1 MHz
+; Clock is 4 MHz, so instruction cycle is 1 MHz
 ; 1000000 / (16 (Pre) * 223 (PR2) * 14 (Post)) = 20.019 Hz (near enough)
+; Clock is 16 MHz, so instruction cycle is 4 MHz
+; 4000000 / (16 (Pre) * 250 (PR2) * 10 (Post)) = 100 Hz (increment flag 4 times to get a 25 Hz update)
 ;
 screen_timer_init
 	banksel	PR2
-	movlw	0xdf				; 233
+;	movlw	0xdf				; 233, (4 MHz clock)
+	movlw	0xfa				; 250, (16 MHz clock)
 	movwf	PR2				; Set the period register
 
 						; T2CON Register
@@ -33,7 +36,8 @@ screen_timer_init
 						;	01 = Prescaler is 4
 						;	1x = Prescaler is 16
 	banksel	T2CON
-	movlw	77				; Prescaler (16), Postscaler (14), Timer2 on
+;	movlw	0x77				; Prescaler (16), Postscaler (14), Timer2 on (4 MHz clock)
+	movlw	0x4f				; Prescaler (16), Postscaler (10), Timer2 on (16 MHz clock)
 	movwf	T2CON
 	return
 
@@ -266,16 +270,10 @@ wbah1:
 ;	- W register points to the offset to load in EEADR
 ;	- EEADRH register preloaded for 'tests' strings
 ;
-screen_write_flash_2_buffer_panel_str
+screen_write_flash_str_2_buffer
 	banksel	EEADR
 	movwf	EEADR						; Write flash offset address
-	movlw	(STR_PANEL_BASE_ADDR >> 8)			; Offset of strings in flash memory (shifted as it's the top bits)
-	movwf	EEADRH
-	goto	screen_write_flash_2_buffer_read
-screen_write_flash_2_buffer_tests_str
-	banksel	EEADR
-	movwf	EEADR						; Write flash offset address
-	movlw	(STR_TESTS_BASE_ADDR >> 8)			; Offset of strings in flash memory (shifted as it's the top bits)
+	movlw	(STRINGS_BASE_ADDR >> 8)			; Offset of strings in flash memory (shifted as it's the top bits)
 	movwf	EEADRH
 	goto	screen_write_flash_2_buffer_read
 screen_write_flash_2_buffer
