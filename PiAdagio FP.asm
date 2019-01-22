@@ -6,9 +6,11 @@
 	include "p16f874.inc"
 	include <coff.inc>
 	include	"i2c.inc"
+	include "i2c_master.inc"
 	include	"ir_receiver.inc"
 	include "lcd.inc"
 	include "commands.inc"
+	include "strings.inc"
 	include "PiAdagio FP.inc"
 
 ;	4 MHz ceramic resonator
@@ -32,7 +34,7 @@
 ; General registers
 		_mr_mode_cur,_mr_mode_prev
 		_mr_cmd_cur,_mr_cmd_prev
-		_mr_test_select						; [7] run test, [6-0] test number
+		_mr_test_select						; [7] run test, [6] subtest select, [5-4] subtest number, [3-0] test number
 		_mr_pwrctrl_select
 		_mr_loop1,_mr_loop2
 		_mr_temp
@@ -40,7 +42,8 @@
 		_mr_button_bank: 3
 ; IR receiver registers
 		_mr_ir_receiver_count_false,_mr_ir_receiver_count_true
-		_mr_ir_receiver_state,_mr_ir_receiver_error_count
+		_mr_ir_receiver_count_false_on_err,_mr_ir_receiver_count_true_on_err
+		_mr_ir_receiver_state,_mr_ir_receiver_state_on_err,_mr_ir_receiver_error_count
 		_mr_ir_receiver_bit_index,_mr_ir_receiver_ft_divide
 		_mr_ir_receiver_address_lsb,_mr_ir_receiver_address_msb
 		_mr_ir_receiver_command,_mr_ir_receiver_command_inverted
@@ -109,7 +112,11 @@ ISR_Tmr1_int
 		goto    ISR_i2c_int
 	btfss	_mr_ir_receiver_state, IR_RECEIVER_MODE_BIT_WAIT
 		call	set_power_led_toggle	; Indicate IR reception
-	call    ir_receiver_interrupt_handler
+
+	movlw	(IR_RECVR_BASE_ADDR>>8)		; Select high address
+	movwf	PCLATH				; For the next 'call'
+	call	ir_receiver_interrupt_handler
+	clrf	PCLATH				; Clear high address for 'goto'
 	goto	ISR_exit
 
 ISR_i2c_int
@@ -146,8 +153,11 @@ main
 	bsf	INTCON, PEIE
 
 	call	screen_timer_enable			; Enable refresh timer
-	call	ir_receiver_timer_enable		; Enable IR receiver timer
 	call	ctrl_rpi_shutdown_int_enable		; Enable power off on shutdown of RPi
+	movlw	(IR_RECVR_BASE_ADDR>>8)			; Select high address
+	movwf	PCLATH					; For the next 'call'
+	call	ir_receiver_timer_enable		; Enable IR receiver timer
+	clrf	PCLATH
 
 main_loop
 	clrwdt						; Clear watchdog timer
@@ -250,13 +260,19 @@ main_loop_mode_testfp
 		call	mode_testfp_init		; then init
 	btfsc	_mr_test_select, 7
 		goto	main_loop_mode_testfp_run
+
+	banksel	_mr_test_select
+	bcf	_mr_test_select, 0x4			; Clear sub test bits
+	bcf	_mr_test_select, 0x5
+	bcf	_mr_test_select, 0x6
+
 	call	mode_testfp_display_tests
 	goto	main_loop_mode_testfp_process_cmd
 main_loop_mode_testfp_run
 main_loop_mode_testfp_run_buttons
 	banksel	_mr_test_select
 	movf	_mr_test_select, W
-	andlw	0x7f					; Strip 'run' flag
+	andlw	TESTFP_TEST_MASK			; Strip extraneous bits
 	TESTFP_TEST_LIST	TESTFP_OBJ_CHECK, TESTFP_TESTS_BUTTONS
 	btfss	STATUS, Z
 		goto	main_loop_mode_testfp_run_lcd
@@ -265,7 +281,7 @@ main_loop_mode_testfp_run_buttons
 main_loop_mode_testfp_run_lcd
 	banksel	_mr_test_select
 	movf	_mr_test_select, W
-	andlw	0x7f					; Strip 'run' flag
+	andlw	TESTFP_TEST_MASK			; Strip extraneous bits
 	TESTFP_TEST_LIST	TESTFP_OBJ_CHECK, TESTFP_TESTS_LCD
 	btfss	STATUS, Z
 		goto	main_loop_mode_testfp_run_ir
@@ -274,20 +290,38 @@ main_loop_mode_testfp_run_lcd
 main_loop_mode_testfp_run_ir
 	banksel	_mr_test_select
 	movf	_mr_test_select, W
-	andlw	0x7f					; Strip 'run' flag
+	andlw	TESTFP_TEST_MASK			; Strip extraneous bits
 	TESTFP_TEST_LIST	TESTFP_OBJ_CHECK, TESTFP_TESTS_IR
 	btfss	STATUS, Z
-		goto	main_loop_mode_testfp_run_i2c
+		goto	main_loop_mode_testfp_run_pwr_cntrls
 	TESTFP_TEST_LIST	TESTFP_OBJ_CODE, TESTFP_TESTS_IR
 	goto	main_loop_mode_testfp_process_cmd
-main_loop_mode_testfp_run_i2c
+main_loop_mode_testfp_run_pwr_cntrls
 	banksel	_mr_test_select
 	movf	_mr_test_select, W
-	andlw	0x7f					; Strip 'run' flag
-	TESTFP_TEST_LIST	TESTFP_OBJ_CHECK, TESTFP_TESTS_I2C
+	andlw	TESTFP_TEST_MASK			; Strip extraneous bits
+	TESTFP_TEST_LIST	TESTFP_OBJ_CHECK, TESTFP_TESTS_PWR_CNTRLS
+	btfss	STATUS, Z
+		goto	main_loop_mode_testfp_run_i2c_master
+	TESTFP_TEST_LIST	TESTFP_OBJ_CODE, TESTFP_TESTS_PWR_CNTRLS
+	goto	main_loop_mode_testfp_process_cmd
+main_loop_mode_testfp_run_i2c_master
+	banksel	_mr_test_select
+	movf	_mr_test_select, W
+	andlw	TESTFP_TEST_MASK			; Strip extraneous bits
+	TESTFP_TEST_LIST	TESTFP_OBJ_CHECK, TESTFP_TESTS_I2C_M
+	btfss	STATUS, Z
+		goto	main_loop_mode_testfp_run_i2c_slave
+	TESTFP_TEST_LIST	TESTFP_OBJ_CODE, TESTFP_TESTS_I2C_M
+	goto	main_loop_mode_testfp_process_cmd
+main_loop_mode_testfp_run_i2c_slave
+	banksel	_mr_test_select
+	movf	_mr_test_select, W
+	andlw	TESTFP_TEST_MASK			; Strip extraneous bits
+	TESTFP_TEST_LIST	TESTFP_OBJ_CHECK, TESTFP_TESTS_I2C_S
 	btfss	STATUS, Z
 		goto	main_loop_mode_testfp_run_exit
-	TESTFP_TEST_LIST	TESTFP_OBJ_CODE, TESTFP_TESTS_I2C
+	TESTFP_TEST_LIST	TESTFP_OBJ_CODE, TESTFP_TESTS_I2C_S
 	goto	main_loop_mode_testfp_process_cmd
 main_loop_mode_testfp_run_exit
 main_loop_mode_testfp_process_cmd
@@ -403,6 +437,8 @@ mode_poweroff_set
 	return
 
 mode_poweroff_init
+	call	i2c_master_init
+	call	lcd_backlight_contrast_settings_save_then_clear
 	call	screen_clear				; Clear screen buffer
 	call	set_online_led_off
 	call	set_psu_off
@@ -422,6 +458,7 @@ mode_poweron_set
 	return
 
 mode_poweron_init
+	call	lcd_backlight_contrast_settings_restore
 	call	set_online_led_off
 	call	set_mpu_as_i2c_slave				; Reset SSP as i2c slave and enable interrupts
 	call	set_psu_on
@@ -430,13 +467,13 @@ mode_poweron_init
 
 	movlw	_mr_screen_buffer_line2 + 3			; Write 'PiAdagio Sound' in the screen buffer (line 2)
 	movwf	FSR
-	movlw	eeprom_str_title1 - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	str_panel_title1 - STR_PANEL_BASE_ADDR
+	call	screen_write_flash_2_buffer_panel_str
 
 	movlw	_mr_screen_buffer_line3 + 7			; Write 'Server' in the screen buffer (line 3)
 	movwf	FSR
-	movlw	eeprom_str_title2 - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	str_panel_title2 - STR_PANEL_BASE_ADDR
+	call	screen_write_flash_2_buffer_panel_str
 
 	banksel	_mr_mode_prev
 	movlw	MODE_POWERON
@@ -599,6 +636,7 @@ mode_testfp_set
 ; Initialise test mode
 ;
 mode_testfp_init
+	call	lcd_backlight_contrast_settings_restore
 	call	screen_clear					; Clear screen buffer
 	call	set_online_led_on
 	call	set_power_led_on
@@ -639,6 +677,118 @@ mode_testfp_dec_selected_test_exit
 	return
 
 ;***********************************************************************
+; mode_testfp_inc_selected_subtest
+;
+; Increments the selected subtest
+;
+mode_testfp_inc_selected_subtest
+	clrw					; Build number (easier than using rrf)
+	btfsc	_mr_test_select, 0x4
+		addlw	0x1
+	btfsc	_mr_test_select, 0x5
+		addlw	0x2
+
+	bcf	_mr_test_select, 0x4		; Clear existing
+	bcf	_mr_test_select, 0x5
+
+	addlw	0x1				; Increment existing value
+	movwf	_mr_temp
+	btfsc	_mr_temp, 0x2			; Rolled over to 4, so decrement again
+		decf	_mr_temp, F
+	btfsc	_mr_temp, 0x0			; Set the appropriate bits
+		bsf	_mr_test_select, 0x4
+	btfsc	_mr_temp, 0x1
+		bsf	_mr_test_select, 0x5
+	return
+
+;***********************************************************************
+; mode_testfp_dec_selected_subtest
+;
+; Decrements the selected subtest
+;
+mode_testfp_dec_selected_subtest
+	clrw					; Build number (easier than using rrf)
+	btfsc	_mr_test_select, 0x4
+		addlw	0x1
+	btfsc	_mr_test_select, 0x5
+		addlw	0x2
+
+	bcf	_mr_test_select, 0x4		; Clear existing
+	bcf	_mr_test_select, 0x5
+
+	movwf	_mr_temp
+	decf	_mr_temp, F
+	btfsc	_mr_temp, 0x7			; Rolled over from 0, so just exit
+		goto	mode_testfp_dec_selected_subtest_exit
+	btfsc	_mr_temp, 0x0			; Set the appropriate bits
+		bsf	_mr_test_select, 0x4
+	btfsc	_mr_temp, 0x1
+		bsf	_mr_test_select, 0x5
+mode_testfp_dec_selected_subtest_exit
+	return
+
+;***********************************************************************
+; mode_testfp_inc_selected_ds1845_value
+;
+; Increments the selected EEPROM value in the DS1845
+;
+mode_testfp_inc_selected_ds1845_value
+	banksel	_mr_test_select
+	movlw	BACKLIGHT_ADDR					; Get the current value
+	btfsc	_mr_test_select, 0x4
+		movlw	CONTRAST_ADDR
+	movwf	_mr_i2c_buffer_index
+	call	i2c_master_ds1845_read
+	banksel	_mr_i2c_buffer
+	incfsz	_mr_i2c_buffer, F				; Increment value
+		goto	mode_testfp_inc_selected_ds1845_value_update
+	goto	mode_testfp_inc_selected_ds1845_value_exit	; But don't write it back if we roll over
+mode_testfp_inc_selected_ds1845_value_update
+	call	i2c_master_ds1845_write				; Save value
+
+mode_testfp_inc_selected_ds1845_value_exit
+	return
+
+;***********************************************************************
+; mode_testfp_dec_selected_ds1845_value
+;
+; Decrements the selected EEPROM value in the DS1845
+;
+mode_testfp_dec_selected_ds1845_value
+	banksel	_mr_test_select
+	movlw	BACKLIGHT_ADDR					; Get the current value
+	btfsc	_mr_test_select, 0x4
+		movlw	CONTRAST_ADDR
+	movwf	_mr_i2c_buffer_index
+	call	i2c_master_ds1845_read
+	banksel	_mr_i2c_buffer
+	movf	_mr_i2c_buffer, F				; Touch value, set STATUS flags
+	btfsc	STATUS, Z
+		goto	mode_testfp_dec_selected_ds1845_value_exit
+	decf	_mr_i2c_buffer, F				; Decrement value
+	call	i2c_master_ds1845_write				; Save value
+
+mode_testfp_dec_selected_ds1845_value_exit
+	return
+
+;***********************************************************************
+; mode_testfp_toggle_subtest_select
+;
+; Toggles whether the subtest is selected
+;
+mode_testfp_toggle_subtest_select
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x6
+		goto	mode_testfp_toggle_subtest_select_high
+mode_testfp_toggle_subtest_select_low
+	bcf	_mr_test_select, 0x6
+	goto	mode_testfp_toggle_subtest_select_exit
+mode_testfp_toggle_subtest_select_high
+	bsf	_mr_test_select, 0x6
+mode_testfp_toggle_subtest_select_exit
+	return
+
+;***********************************************************************
 ; mode_testfp_display_tests
 ;
 ; Displays a list of tests, with the selected test highlighted
@@ -646,74 +796,151 @@ mode_testfp_dec_selected_test_exit
 mode_testfp_display_tests
 	call	screen_clear
 
-mode_testfp_display_tests_line1
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x2
+		goto	mode_testfp_display_tests_screen2_line1
+
+mode_testfp_display_tests_screen1_line1
 	movlw	_mr_screen_buffer_line1 + 1			; Select line 1, 2nd character
 	movwf	FSR
 	banksel	_mr_test_select
 	movf	_mr_test_select, W				; Is this the test selected
 	sublw	0x0						; Usually this would be > 0
 	btfss	STATUS, Z
-		goto	mode_testfp_display_tests_line1_txt	; If not selected, skip to text
+		goto	mode_testfp_display_tests_screen1_line1_txt	; If not selected, skip to text
 	movlw	'>'						; Otherwise, add an '>' to show selection
 	call	screen_write_char
 	decf	FSR, F
-mode_testfp_display_tests_line1_txt
+mode_testfp_display_tests_screen1_line1_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	eeprom_str_tmode0 - 0x2100			; Subtract 0x2100, as that is only used for generating the iHEX file
-	call	screen_write_eeprom_2_buffer			; Write string
+	movlw	str_tests_tmode0 - STR_TESTS_BASE_ADDR		; Subtract STR_TESTS_BASE_ADDR to get the offset
+	call	screen_write_flash_2_buffer_tests_str			; Write string
 
-mode_testfp_display_tests_line2
+mode_testfp_display_tests_screen1_line2
 	movlw	_mr_screen_buffer_line2 + 1			; Select line 2, 2nd character
 	movwf	FSR
 	banksel	_mr_test_select
 	movf	_mr_test_select, W				; Is this the test selected
 	sublw	0x1						; Usually this would be > 0
 	btfss	STATUS, Z
-		goto	mode_testfp_display_tests_line2_txt	; If not selected, skip to text
+		goto	mode_testfp_display_tests_screen1_line2_txt	; If not selected, skip to text
 	movlw	'>'						; Otherwise, add an '>' to show selection
 	call	screen_write_char
 	decf	FSR, F
-mode_testfp_display_tests_line2_txt
+mode_testfp_display_tests_screen1_line2_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	eeprom_str_tmode1 - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	str_tests_tmode1 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
-mode_testfp_display_tests_line3
+mode_testfp_display_tests_screen1_line3
 	movlw	_mr_screen_buffer_line3 + 1			; Select line 3, 2nd character
 	movwf	FSR
 	banksel	_mr_test_select
 	movf	_mr_test_select, W				; Is this the test selected
 	sublw	0x2						; Usually this would be > 0
 	btfss	STATUS, Z
-		goto	mode_testfp_display_tests_line3_txt	; If not selected, skip to text
+		goto	mode_testfp_display_tests_screen1_line3_txt	; If not selected, skip to text
 	movlw	'>'						; Otherwise, add an '>' to show selection
 	call	screen_write_char
 	decf	FSR, F
-mode_testfp_display_tests_line3_txt
+mode_testfp_display_tests_screen1_line3_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	eeprom_str_tmode2 - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	str_tests_tmode2 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
-mode_testfp_display_tests_line4
+mode_testfp_display_tests_screen1_line4
 	movlw	_mr_screen_buffer_line4 + 1			; Select line 4, 2nd character
 	movwf	FSR
 	banksel	_mr_test_select
 	movf	_mr_test_select, W				; Is this the test selected
 	sublw	0x3						; Usually this would be > 0
 	btfss	STATUS, Z
-		goto	mode_testfp_display_tests_line4_txt	; If not selected, skip to text
+		goto	mode_testfp_display_tests_screen1_line4_txt	; If not selected, skip to text
 	movlw	'>'						; Otherwise, add an '>' to show selection
 	call	screen_write_char
 	decf	FSR, F
-mode_testfp_display_tests_line4_txt
+mode_testfp_display_tests_screen1_line4_txt
 	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
 	addwf	FSR, F
-	movlw	eeprom_str_tmode3 - 0x2100
-	call	screen_write_eeprom_2_buffer
+	movlw	str_tests_tmode3 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
+	goto	mode_testfp_display_tests_exit
+
+mode_testfp_display_tests_screen2_line1
+	movlw	_mr_screen_buffer_line1 + 1			; Select line 1, 2nd character
+	movwf	FSR
+	banksel	_mr_test_select
+	movf	_mr_test_select, W				; Is this the test selected
+	sublw	0x4						; Usually this would be > 0
+	btfss	STATUS, Z
+		goto	mode_testfp_display_tests_screen2_line1_txt	; If not selected, skip to text
+	movlw	'>'						; Otherwise, add an '>' to show selection
+	call	screen_write_char
+	decf	FSR, F
+mode_testfp_display_tests_screen2_line1_txt
+	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
+	addwf	FSR, F
+	movlw	str_tests_tmode4 - STR_TESTS_BASE_ADDR		; Subtract STR_TESTS_BASE_ADDR to get the offset
+	call	screen_write_flash_2_buffer_tests_str			; Write string
+
+mode_testfp_display_tests_screen2_line2
+	movlw	_mr_screen_buffer_line2 + 1			; Select line 2, 2nd character
+	movwf	FSR
+	banksel	_mr_test_select
+	movf	_mr_test_select, W				; Is this the test selected
+	sublw	0x5						; Usually this would be > 0
+	btfss	STATUS, Z
+		goto	mode_testfp_display_tests_screen2_line2_txt	; If not selected, skip to text
+	movlw	'>'						; Otherwise, add an '>' to show selection
+	call	screen_write_char
+	decf	FSR, F
+mode_testfp_display_tests_screen2_line2_txt
+	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
+	addwf	FSR, F
+	movlw	str_tests_tmode5 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+;mode_testfp_display_tests_screen2_line3
+;	movlw	_mr_screen_buffer_line3 + 1			; Select line 3, 2nd character
+;	movwf	FSR
+;	banksel	_mr_test_select
+;	movf	_mr_test_select, W				; Is this the test selected
+;	sublw	0x6						; Usually this would be > 0
+;	btfss	STATUS, Z
+;		goto	mode_testfp_display_tests_screen2_line3_txt	; If not selected, skip to text
+;	movlw	'>'						; Otherwise, add an '>' to show selection
+;	call	screen_write_char
+;	decf	FSR, F
+;mode_testfp_display_tests_screen2_line3_txt
+;	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
+;	addwf	FSR, F
+;	movlw	str_tests_tmode6 - STR_TESTS_BASE_ADDR
+;	call	screen_write_flash_2_buffer_tests_str
+
+;mode_testfp_display_tests_screen2_line4
+;	movlw	_mr_screen_buffer_line4 + 1			; Select line 4, 2nd character
+;	movwf	FSR
+;	banksel	_mr_test_select
+;	movf	_mr_test_select, W				; Is this the test selected
+;	sublw	0x7						; Usually this would be > 0
+;	btfss	STATUS, Z
+;		goto	mode_testfp_display_tests_screen2_line4_txt	; If not selected, skip to text
+;	movlw	'>'						; Otherwise, add an '>' to show selection
+;	call	screen_write_char
+;	decf	FSR, F
+;mode_testfp_display_tests_screen2_line4_txt
+;	movlw	0x2						; Add 2 to the FSR, to columinate the text strings
+;	addwf	FSR, F
+;	movlw	str_tests_tmode7 - STR_TESTS_BASE_ADDR
+;	call	screen_write_flash_2_buffer_tests_str
+
+	goto	mode_testfp_display_tests_exit
+
+mode_testfp_display_tests_exit
 	return
 
 ;***********************************************************************
@@ -726,12 +953,9 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR
-	movlw	'B'
-	call	screen_write_char
-	movlw	'n'
-	call	screen_write_char
-	movlw	'k'
-	call	screen_write_char
+
+	movlw	str_tests_bank - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	movlw	'1'
 	call	screen_write_char
 	movlw	':'
@@ -742,12 +966,8 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line1 + 10
 	movwf	FSR
-	movlw	'B'
-	call	screen_write_char
-	movlw	'n'
-	call	screen_write_char
-	movlw	'k'
-	call	screen_write_char
+	movlw	str_tests_bank - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	movlw	'2'
 	call	screen_write_char
 	movlw	':'
@@ -758,12 +978,8 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR
-	movlw	'B'
-	call	screen_write_char
-	movlw	'n'
-	call	screen_write_char
-	movlw	'k'
-	call	screen_write_char
+	movlw	str_tests_bank - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	movlw	'3'
 	call	screen_write_char
 	movlw	':'
@@ -774,20 +990,8 @@ mode_testfp_test_buttons
 
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR
-	movlw	'F'
-	call	screen_write_char
-	movlw	'P'
-	call	screen_write_char
-	movlw	' '
-	call	screen_write_char
-	movlw	'C'
-	call	screen_write_char
-	movlw	'm'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	':'
-	call	screen_write_char
+	movlw	str_tests_fp_cmd - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, W
 	call	screen_write_byte_as_hex
@@ -805,109 +1009,26 @@ mode_testfp_test_lcd
 mode_testfp_test_lcd_line1
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR					; Configure FSR to point to line 1
-
-	banksel	_mr_temp
-	clrf	_mr_temp				; Clear temporary storage
-mode_testfp_test_lcd_line1_loop
-	movf	_mr_temp, W				; Load current value
-	addlw	'A'					; Add to 'A' to get current letter
-	call	screen_write_char			; Write to screen buffer
-	banksel	_mr_temp
-	incf	_mr_temp, F				; Increment current value
-	movf	_mr_temp, W
-	sublw	0x14					; Have we reached the EOL
-	btfss	STATUS, Z
-		goto	mode_testfp_test_lcd_line1_loop
+	movlw	str_tests_lcd_line1 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
 mode_testfp_test_lcd_line2
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR					; Configure FSR to point to line 2
-
-	banksel	_mr_temp
-	clrf	_mr_temp				; Clear temporary storage
-mode_testfp_test_lcd_line2_loop1
-	movf	_mr_temp, W				; Load current value
-	addlw	'U'					; Add to 'U' to get current letter
-	call	screen_write_char			; Write to screen buffer
-	banksel	_mr_temp
-	incf	_mr_temp, F				; Increment current value
-	movf	_mr_temp, W
-	sublw	0x06					; Have we reached the EOL
-	btfss	STATUS, Z
-		goto	mode_testfp_test_lcd_line2_loop1
-	clrf	_mr_temp				; Clear temporary storage
-mode_testfp_test_lcd_line2_loop2
-	movf	_mr_temp, W				; Load current value
-	addlw	'a'					; Add to 'a' to get current letter
-	call	screen_write_char			; Write to screen buffer
-	banksel	_mr_temp
-	incf	_mr_temp, F				; Increment current value
-	movf	_mr_temp, W
-	sublw	0x0e					; Have we reached the EOL
-	btfss	STATUS, Z
-		goto	mode_testfp_test_lcd_line2_loop2
+	movlw	str_tests_lcd_line2 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
 mode_testfp_test_lcd_line3
 	movlw	_mr_screen_buffer_line3
 	movwf	FSR					; Configure FSR to point to line 3
-
-	banksel	_mr_temp
-	clrf	_mr_temp				; Clear temporary storage
-mode_testfp_test_lcd_line3_loop1
-	movf	_mr_temp, W				; Load current value
-	addlw	'o'					; Add to 'o' to get current letter
-	call	screen_write_char			; Write to screen buffer
-	banksel	_mr_temp
-	incf	_mr_temp, F				; Increment current value
-	movf	_mr_temp, W
-	sublw	0x0c					; Have we reached the EOL
-	btfss	STATUS, Z
-		goto	mode_testfp_test_lcd_line3_loop1
-	clrf	_mr_temp				; Clear temporary storage
-mode_testfp_test_lcd_line3_loop2
-	movf	_mr_temp, W				; Load current value
-	addlw	'0'					; Add to 'A' to get current letter
-	call	screen_write_char			; Write to screen buffer
-	banksel	_mr_temp
-	incf	_mr_temp, F				; Increment current value
-	movf	_mr_temp, W
-	sublw	0x08					; Have we reached the EOL
-	btfss	STATUS, Z
-		goto	mode_testfp_test_lcd_line3_loop2
+	movlw	str_tests_lcd_line3 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
 mode_testfp_test_lcd_line4
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR					; Configure FSR to point to line 4
-
-	banksel	_mr_temp
-	clrf	_mr_temp				; Clear temporary storage
-mode_testfp_test_lcd_line4_loop1
-	movf	_mr_temp, W				; Load current value
-	addlw	'8'					; Add to 'o' to get current letter
-	call	screen_write_char			; Write to screen buffer
-	banksel	_mr_temp
-	incf	_mr_temp, F				; Increment current value
-	movf	_mr_temp, W
-	sublw	0x02					; Have we reached the EOL
-	btfss	STATUS, Z
-		goto	mode_testfp_test_lcd_line4_loop1
-	clrf	_mr_temp				; Clear temporary storage
-mode_testfp_test_lcd_line4_loop2
-	movf	_mr_temp, W				; Load current value
-	addlw	'!'					; Add to 'A' to get current letter
-	call	screen_write_char			; Write to screen buffer
-	banksel	_mr_temp
-	incf	_mr_temp, F				; Increment current value
-	movf	_mr_temp, W
-	sublw	0x0f					; Have we reached the EOL
-	btfss	STATUS, Z
-		goto	mode_testfp_test_lcd_line4_loop2
-	movlw	'<'
-	call	screen_write_char			; Write to screen buffer
-	movlw	'='
-	call	screen_write_char			; Write to screen buffer
-	movlw	'>'
-	call	screen_write_char			; Write to screen buffer
+	movlw	str_tests_lcd_line4 - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
 	return
 
@@ -917,30 +1038,17 @@ mode_testfp_test_lcd_line4_loop2
 ; Tests the IR detector/decoder.
 ;
 mode_testfp_test_ir
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x6				; Have we paused the display
+		goto	mode_testfp_test_ir_process_cmd 	; If so, just process commands
+
 	call	screen_clear
 
 	movlw	_mr_screen_buffer_line1
 	movwf	FSR
-	movlw	'R'
-	call	screen_write_char
-	movlw	'c'
-	call	screen_write_char
-	movlw	'v'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	' '
-	call	screen_write_char
-	movlw	'A'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	'r'
-	call	screen_write_char
-	movlw	':'
-	call	screen_write_char
+
+	movlw	str_tests_rcvd_addr - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	banksel	_mr_ir_receiver_address_msb
 	movf	_mr_ir_receiver_address_msb, W
 	call    screen_write_byte_as_hex
@@ -960,86 +1068,73 @@ mode_testfp_test_ir
 
 	movlw	_mr_screen_buffer_line2
 	movwf	FSR
-	movlw	'R'
-	call	screen_write_char
-	movlw	'c'
-	call	screen_write_char
-	movlw	'v'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	' '
-	call	screen_write_char
-	movlw	'C'
-	call	screen_write_char
-	movlw	'm'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	':'
-	call	screen_write_char
+	movlw	str_tests_rcvd_cmd - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	banksel	_mr_ir_receiver_command
 	movf	_mr_ir_receiver_command, W
 	call    screen_write_byte_as_hex
+	incf	FSR, F
+	movlw	'('
+	call	screen_write_char
+	banksel	_mr_ir_receiver_command_inverted
+	movf	_mr_ir_receiver_command_inverted, W
+	call	screen_write_byte_as_hex
+	movlw	')'
+	call	screen_write_char
 
 	movlw	_mr_screen_buffer_line3
 	movwf	FSR
-	movlw	'E'
-	call	screen_write_char
-	movlw	'r'
-	call	screen_write_char
-	movlw	'r'
-	call	screen_write_char
-	movlw	' '
-	call	screen_write_char
-	movlw	'C'
-	call	screen_write_char
-	movlw	'n'
-	call	screen_write_char
-	movlw	't'
-	call	screen_write_char
-	movlw	':'
-	call	screen_write_char
+	movlw	str_tests_err_cnt - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	banksel	_mr_ir_receiver_error_count
 	movf	_mr_ir_receiver_error_count, W
 	call    screen_write_byte_as_hex
+	movlw	'('
+	call	screen_write_char
+	banksel	_mr_ir_receiver_state_on_err
+	movf	_mr_ir_receiver_state_on_err, W
+	call	screen_write_byte_as_hex
+	movlw	':'
+	call	screen_write_char
+	banksel	_mr_ir_receiver_count_true_on_err
+	movf	_mr_ir_receiver_count_true_on_err, W
+	call	screen_write_byte_as_hex
+	movlw	'/'
+	call	screen_write_char
+	banksel	_mr_ir_receiver_count_false_on_err
+	movf	_mr_ir_receiver_count_false_on_err, W
+	call	screen_write_byte_as_hex
+	movlw	')'
+	call	screen_write_char
 
 	movlw	_mr_screen_buffer_line4
 	movwf	FSR
-	movlw	'C'
-	call	screen_write_char
-	movlw	'm'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	':'
-	call	screen_write_char
+	movlw	str_tests_cmd - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	banksel	_mr_ir_receiver_command_actual
 	movf	_mr_ir_receiver_command_actual, W
 	call    screen_write_byte_as_hex
 
 	movlw	_mr_screen_buffer_line4 + 10
 	movwf	FSR
-	movlw	'F'
-	call	screen_write_char
-	movlw	'P'
-	call	screen_write_char
-	movlw	' '
-	call	screen_write_char
-	movlw	'C'
-	call	screen_write_char
-	movlw	'm'
-	call	screen_write_char
-	movlw	'd'
-	call	screen_write_char
-	movlw	':'
-	call	screen_write_char
+	movlw	str_tests_fp_cmd - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 	banksel	_mr_cmd_cur
 	movf	_mr_cmd_cur, W
 	call    screen_write_byte_as_hex
 
+mode_testfp_test_ir_process_cmd
 	banksel	_mr_cmd_cur
-	movf	_mr_cmd_cur, F
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, W
+	btfsc	STATUS, Z					; Check for a change of command state
+		goto	mode_testfp_test_ir_exit
+	movf	_mr_cmd_cur, W
+	sublw	CMD_PAUSE
+	btfsc	STATUS, Z
+		call	mode_testfp_toggle_subtest_select
+	movf	_mr_cmd_cur, W
+	sublw	CMD_NONE
 	btfss	STATUS, Z
 		goto	mode_testfp_test_ir_exit
 	movf	_mr_cmd_prev, W
@@ -1047,48 +1142,156 @@ mode_testfp_test_ir
 	btfss	STATUS, Z
 		goto	mode_testfp_test_ir_exit
 	movf	_mr_ir_receiver_address_lsb, W			; Update the IR receiver address, with previously received value
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	andlw	0xfe						; Fix the address for Avermedia remote
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	movwf	_mr_ir_receiver_address_lsb_actual
 	movf	_mr_ir_receiver_address_msb, W			; Update the IR receiver address, with previously received value
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	andlw	0xfe						; Fix the address for Avermedia remote
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	movwf	_mr_ir_receiver_address_msb_actual
+	movlw	(IR_RECVR_BASE_ADDR>>8)				; Select high address
+	movwf	PCLATH						; For the next 'call'
 	call	ir_receiver_save_receiver_addr			; Save address back to the EEPROM
+	clrf	PCLATH
 
 mode_testfp_test_ir_exit
 	return
 
 ;***********************************************************************
-; mode_testfp_test_i2c
+; mode_testfp_test_pwr_cntrls
 ;
-mode_testfp_test_i2c
+mode_testfp_test_pwr_cntrls
 	call	screen_clear
 
-	movlw	_mr_screen_buffer_line2 + 3
+	movlw	_mr_screen_buffer_line2 + 4
 	movwf	FSR
-	movlw	'N'
-	call	screen_write_char
-	movlw	'o'
-	call	screen_write_char
-	movlw	't'
-	call	screen_write_char
-	movlw	' '
-	call	screen_write_char
-	movlw	'A'
-	call	screen_write_char
-	movlw	'v'
-	call	screen_write_char
-	movlw	'a'
-	call	screen_write_char
-	movlw	'i'
-	call	screen_write_char
-	movlw	'l'
-	call	screen_write_char
-	movlw	'a'
-	call	screen_write_char
-	movlw	'b'
-	call	screen_write_char
-	movlw	'l'
-	call	screen_write_char
-	movlw	'e'
-	call	screen_write_char
+
+	movlw	str_tests_not_avail - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	return
+
+;***********************************************************************
+; mode_testfp_test_i2c_master
+;
+mode_testfp_test_i2c_master
+	call	i2c_master_init
+	call	screen_clear
+
+	movlw	_mr_screen_buffer_line1 + 2
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x6
+		goto	mode_testfp_test_i2c_master_backlight
+	btfss	_mr_test_select, 0x4
+		call	screen_write_char
+mode_testfp_test_i2c_master_backlight
+	movlw	_mr_screen_buffer_line1 + 4
+	movwf	FSR
+	movlw	str_tests_backlight - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	movlw	_mr_screen_buffer_line1 + 16
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x6
+		goto	mode_testfp_test_i2c_master_backlight_value
+	btfss	_mr_test_select, 0x4
+		call	screen_write_char
+mode_testfp_test_i2c_master_backlight_value
+	movlw	_mr_screen_buffer_line1 + 17
+	movwf	FSR
+	call	i2c_master_ds1845_read_backlight
+	banksel	_mr_i2c_buffer
+	movf	_mr_i2c_buffer, W
+	call	screen_write_byte_as_hex
+
+	movlw	_mr_screen_buffer_line3 + 2
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfsc	_mr_test_select, 0x6
+		goto	mode_testfp_test_i2c_master_contrast
+	btfsc	_mr_test_select, 0x4
+		call	screen_write_char
+mode_testfp_test_i2c_master_contrast
+	movlw	_mr_screen_buffer_line3 + 4
+	movwf	FSR
+	movlw	str_tests_contrast - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
+
+	movlw	_mr_screen_buffer_line3 + 16
+	movwf	FSR
+	movlw	'>'
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x6
+		goto	mode_testfp_test_i2c_master_contrast_value
+	btfsc	_mr_test_select, 0x4
+		call	screen_write_char
+mode_testfp_test_i2c_master_contrast_value
+	movlw	_mr_screen_buffer_line3 + 17
+	movwf	FSR
+	call	i2c_master_ds1845_read_contrast
+	banksel	_mr_i2c_buffer
+	movf	_mr_i2c_buffer, W
+	call	screen_write_byte_as_hex
+
+mode_testfp_test_i2c_master_process_cmd
+	banksel	_mr_cmd_cur
+	movf	_mr_cmd_cur, W
+	subwf	_mr_cmd_prev, F
+	btfsc	STATUS, Z				; Check for a change of command state
+		goto	mode_testfp_test_i2c_master_exit
+	btfsc	_mr_test_select, 0x6			; Test if the value is selected
+		goto	mode_testfp_test_i2c_master_process_cmd_value
+	sublw	CMD_UP
+	btfsc	STATUS, Z				; Check for a up command
+		call	mode_testfp_dec_selected_subtest
+	movf	_mr_cmd_cur, W
+	sublw	CMD_DOWN
+	btfsc	STATUS, Z				; Check for a down command
+		call	mode_testfp_inc_selected_subtest
+	movf	_mr_cmd_cur, W
+	goto	mode_testfp_test_i2c_master_process_cmd_select
+mode_testfp_test_i2c_master_process_cmd_value
+	sublw	CMD_UP
+	btfsc	STATUS, Z				; Check for a up command
+		call	mode_testfp_inc_selected_ds1845_value
+	movf	_mr_cmd_cur, W
+	sublw	CMD_DOWN
+	btfsc	STATUS, Z				; Check for a down command
+		call	mode_testfp_dec_selected_ds1845_value
+	movf	_mr_cmd_cur, W
+mode_testfp_test_i2c_master_process_cmd_select
+	sublw	CMD_SELECT
+	btfsc	STATUS, Z				; Check for a select command
+		call	mode_testfp_toggle_subtest_select
+
+mode_testfp_test_i2c_master_check
+	banksel	_mr_test_select
+	btfss	_mr_test_select, 0x5			; Check if we've gone too far
+		goto	mode_testfp_test_i2c_master_exit
+	bcf	_mr_test_select, 0x5			; Reset value
+	bsf	_mr_test_select, 0x4
+
+mode_testfp_test_i2c_master_exit
+	return
+
+;***********************************************************************
+; mode_testfp_test_i2c_slave
+;
+mode_testfp_test_i2c_slave
+	call	screen_clear
+
+	movlw	_mr_screen_buffer_line2 + 4
+	movwf	FSR
+
+	movlw	str_tests_not_avail - STR_TESTS_BASE_ADDR
+	call	screen_write_flash_2_buffer_tests_str
 
 	return
 
@@ -1355,6 +1558,101 @@ set_online_led_on
 	return
 
 ;***********************************************************************
+; Saves the current backlight/contrast values to EEPROM, then clears
+lcd_backlight_contrast_settings_save_then_clear
+	banksel	_mr_i2c_buffer_index
+	movlw	CONTRAST_ADDR			; Load the address of the contrast control
+	movwf	_mr_i2c_buffer_index		; as it's first
+
+	banksel	EEADR
+	movlw	eeprom_lcd_contrast - 0x2100	; Load the address of the contrast value
+	movwf	EEADR				; as it's first
+	clrf	EEADRH
+
+lcd_backlight_contrast_settings_save_then_clear_loop
+	call	i2c_master_ds1845_read		; Read current value
+
+	call	pic_eeprom_read			; Read stored value
+
+	banksel	_mr_i2c_buffer
+	subwf	_mr_i2c_buffer, W		; Test stored value against current value
+	btfsc	STATUS, Z
+		goto	lcd_backlight_contrast_settings_save_then_clear_next
+
+	movf	_mr_i2c_buffer, W
+	banksel	EEDATA
+	movwf	EEDATA
+	decf	EEADR, F			; This was previously incremented, need the old value
+
+	call	pic_eeprom_write_finish_wait
+
+	call    pic_eeprom_write
+
+lcd_backlight_contrast_settings_save_then_clear_next
+	banksel	_mr_i2c_buffer_index
+	incf	_mr_i2c_buffer_index, F		; Increment the control address
+
+	movf	_mr_i2c_buffer_index, W
+	sublw	BACKLIGHT_ADDR			; Subtract the address of the backlight value
+	btfsc	STATUS, Z			; Loop if we still have the backlight to do
+		goto	lcd_backlight_contrast_settings_save_then_clear_loop
+
+	movlw	BACKLIGHT_ADDR
+	movwf	_mr_i2c_buffer_index
+	clrf	_mr_i2c_buffer
+	call	i2c_master_ds1845_write		; Turn off LCD backlight
+
+	return
+
+;***********************************************************************
+; Restores the current backlight/contrast values from EEPROM
+lcd_backlight_contrast_settings_restore
+	banksel	_mr_i2c_buffer_index
+	movlw	CONTRAST_ADDR			; Load the address of the contrast control
+	movwf	_mr_i2c_buffer_index		; as it's first
+
+	banksel	EEADR
+	movlw	eeprom_lcd_contrast - 0x2100	; Load the address of the contrast value
+	movwf	EEADR				; as it's first
+	clrf	EEADRH
+
+lcd_backlight_contrast_settings_restore_loop
+	call	pic_eeprom_read
+
+	banksel	_mr_i2c_buffer
+	movwf	_mr_i2c_buffer			; Save the data for writing
+	call	i2c_master_ds1845_write		; Write the data to the control
+	banksel	_mr_i2c_buffer_index
+	incf	_mr_i2c_buffer_index, F		; Increment the control address
+
+	movf	_mr_i2c_buffer_index, W
+	sublw	BACKLIGHT_ADDR			; Subtract the address of the backlight value
+	btfsc	STATUS, Z			; Loop if we still have the backlight to do
+		goto	lcd_backlight_contrast_settings_restore_loop
+
+	return
+
+;***********************************************************************
+; Draws a border to the screen buffer
+screen_draw_border
+	movlw	_mr_screen_buffer_line1
+	movwf	FSR
+
+	movlw	str_panel_border_full - STR_PANEL_BASE_ADDR
+	call	screen_write_flash_2_buffer_panel_str
+
+	movlw	str_panel_border_edges - STR_PANEL_BASE_ADDR
+	call	screen_write_flash_2_buffer_panel_str
+
+	movlw	str_panel_border_edges - STR_PANEL_BASE_ADDR
+	call	screen_write_flash_2_buffer_panel_str
+
+	movlw	str_panel_border_full - STR_PANEL_BASE_ADDR
+	call	screen_write_flash_2_buffer_panel_str
+
+	return
+
+;***********************************************************************
 ; Initialisation routines
 ;***********************************************************************
 ; Initialise MPU
@@ -1421,12 +1719,10 @@ init_mpu
 
 ; Setup Timers
 	call	screen_timer_init			; Setup timer to refresh LCD
+	movlw	(IR_RECVR_BASE_ADDR>>8)			; Select high address
+	movwf	PCLATH					; For the next 'call'
 	call	ir_receiver_timer_init			; Setup timer to sample IR receiver input
-
-	CALL	i2c_master_init
-
-;	CALL    i2c_master_start
-;	CALL    i2c_master_stop
+	clrf	PCLATH
 
 	call	set_online_led_on			; Turn on 'online' LED (This shows MPU initialised)
 
@@ -1475,22 +1771,11 @@ init_mem
 	banksel	EEADR
 	movlw	eeprom_ir_addr_lsb - 0x2100			; Get the IR receiver address
 	movwf	EEADR
-	banksel	EECON1
-	bcf	EECON1, EEPGD					; Select EEPROM memory
-	bsf	EECON1, RD					; Start read operation
-	banksel	EEDATA
-	movf	EEDATA, W
+	clrf	EEADRH
+	call	pic_eeprom_read
 	banksel	_mr_ir_receiver_address_lsb_actual
 	movwf	_mr_ir_receiver_address_lsb_actual
-
-	banksel	EEADR
-	movlw	eeprom_ir_addr_msb - 0x2100			; Get the IR receiver address
-	movwf	EEADR
-	banksel	EECON1
-	bcf	EECON1, EEPGD					; Select EEPROM memory
-	bsf	EECON1, RD					; Start read operation
-	banksel	EEDATA
-	movf	EEDATA, W
+	call	pic_eeprom_read
 	banksel	_mr_ir_receiver_address_msb_actual
 	movwf	_mr_ir_receiver_address_msb_actual
 
@@ -1503,8 +1788,7 @@ init_board
 
 	call	LCD_INITIALIZE
 
-;	call	lcd_write_bckcon_default_bck		; The backlight would be setup with a value from EEPROM, bypassed
-;	call	lcd_write_bckcon_default_con		; Fudge contrast value as well for testing
+	call	i2c_master_init
 
 	return
 
@@ -1531,9 +1815,13 @@ waste_time_l1
 	include "i2c_master.asm"
 	include "i2c_slave.asm"
 	include "lcd.asm"
+	include	"pic_eeprom.asm"
 	include	"screen.asm"
 	include "commands.asm"
-	include	"ir_receiver.asm"			; This has a table at a fixed location, so needs to be loaded last
+
+	include	"ir_receiver.asm"			; This has a fixed location so needs to be loaded last
+	include	"strings.asm"				; This has a fixed location, so needs to be loaded last
+	include	"jmp_tables.asm"			; This has a table at a fixed location, so needs to be loaded last
 
 ;***********************************************************************
 ;***********************************************************************
@@ -1541,17 +1829,13 @@ waste_time_l1
 ;***********************************************************************
 ;***********************************************************************
 .eedata	org	0x2100
+;eeprom_lcd_contrast	de	0x00
+eeprom_lcd_contrast	de	0x5d
+eeprom_lcd_backlight	de	0x3f
 eeprom_ir_addr_lsb	de	0x24
 eeprom_ir_addr_msb	de	0x42
-eeprom_str_title1	de	"PiAdagio Sound\0"
-eeprom_str_title2	de	"Server\0"
 eeprom_str_poweroff	de	"Power Off\0"
 eeprom_str_reset	de	"Hard Reset\0"
 eeprom_str_shutdown	de	"Shutdown\0"
-
-eeprom_str_tmode0	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,0
-eeprom_str_tmode1	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,1
-eeprom_str_tmode2	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,2
-eeprom_str_tmode3	TESTFP_TEST_LIST	TESTFP_OBJ_EEPROM,3
 
         END

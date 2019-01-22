@@ -116,47 +116,47 @@ screen_write_2_lcd_lines24
 
 	return
 
-;*******************************************************************
-; Draw a decorative border around the screen (lcd buffer)
-
-screen_draw_border
-	call	screen_clear
-
-	banksel	_mr_screen_buffer_line1
-
-	movlw	_mr_screen_buffer_line1
-	movwf	FSR
-	movlw	0x15
-	movwf	_mr_screen_buffer_loop
-	movlw	0x2A					; Ascii '*'
-screen_draw_border_l13
-	movwf	INDF
-	incf	FSR, F
-	decfsz	_mr_screen_buffer_loop, F
-		goto	screen_draw_border_l13
-	movf	FSR, W
-	addlw	0x12
-	movwf	FSR
-	movlw	0x2A					; Ascii '*'
-	movwf	INDF
-
-	movlw	_mr_screen_buffer_line2
-	movwf	FSR
-	movlw	0x2A					; Ascii '*'
-	movwf	INDF
-	movf	FSR, W
-	addlw	0x13
-	movwf	FSR
-	movlw	0x15
-	movwf	_mr_screen_buffer_loop
-	movlw	0x2A					; Ascii '*'
-screen_draw_border_l24
-	movwf	INDF
-	incf	FSR, F
-	decfsz	_mr_screen_buffer_loop, F
-		goto	screen_draw_border_l24
-
-	return
+;;*******************************************************************
+;; Draw a decorative border around the screen (lcd buffer)
+;
+;screen_draw_border
+;	call	screen_clear
+;
+;	banksel	_mr_screen_buffer_line1
+;
+;	movlw	_mr_screen_buffer_line1
+;	movwf	FSR
+;	movlw	0x15
+;	movwf	_mr_screen_buffer_loop
+;	movlw	0x2A					; Ascii '*'
+;screen_draw_border_l13
+;	movwf	INDF
+;	incf	FSR, F
+;	decfsz	_mr_screen_buffer_loop, F
+;		goto	screen_draw_border_l13
+;	movf	FSR, W
+;	addlw	0x12
+;	movwf	FSR
+;	movlw	0x2A					; Ascii '*'
+;	movwf	INDF
+;
+;	movlw	_mr_screen_buffer_line2
+;	movwf	FSR
+;	movlw	0x2A					; Ascii '*'
+;	movwf	INDF
+;	movf	FSR, W
+;	addlw	0x13
+;	movwf	FSR
+;	movlw	0x15
+;	movwf	_mr_screen_buffer_loop
+;	movlw	0x2A					; Ascii '*'
+;screen_draw_border_l24
+;	movwf	INDF
+;	incf	FSR, F
+;	decfsz	_mr_screen_buffer_loop, F
+;		goto	screen_draw_border_l24
+;
+;	return
 
 ;*******************************************************************
 ; screen_write_char
@@ -224,31 +224,96 @@ wbah1:
 ;        MOVF    INDF,W                  ;Get the LSB
 ;        goto    write_byte_as_hex       ;And print it.
 
+;;*******************************************************************
+;; screen_write_eeprom_2_buffer
+;;
+;; Copies a zero terminated string from the EEPROM to the screen
+;; buffer. FSR needs to be configured to point to the correct
+;; location in the screen buffer. W register points to the offset in
+;; ROM.
+;;
+;screen_write_eeprom_2_buffer
+;	banksel	EEADR
+;	movwf	EEADR			; Write EEPROM offset address
+;	clrf	EEADRH			; Clear high address for EEPROM access
+;screen_write_eeprom_2_buffer_read
+;	call	pic_eeprom_read
+;
+;	btfsc	STATUS, Z
+;		goto	screen_write_eeprom_2_buffer_exit
+;	banksel	_mr_screen_buffer_line1
+;	movwf	INDF
+;	incf	FSR, F
+;	goto	screen_write_eeprom_2_buffer_read
+;
+;screen_write_eeprom_2_buffer_exit
+;	return
+
 ;*******************************************************************
-; screen_write_eeprom_2_buffer
+; screen_write_flash_2_buffer
 ;
-; Copies a zero terminated string from the EEPROM to the screen
+; Copies a zero terminated string from program flash to the screen
 ; buffer. FSR needs to be configured to point to the correct
-; location in the screen buffer. W register points to the offset in
-; ROM.
+; location in the screen buffer.
 ;
-screen_write_eeprom_2_buffer
+; screen_write_flash_2_buffer:
+;	- W register points to the offset to load in EEADR
+;	- EEADRH register preloaded with correct value
+; screen_write_flash_2_buffer_panel_str:
+;	- W register points to the offset to load in EEADR
+;	- EEADRH register preloaded for 'panel' strings
+; screen_write_flash_2_buffer_tests_str:
+;	- W register points to the offset to load in EEADR
+;	- EEADRH register preloaded for 'tests' strings
+;
+screen_write_flash_2_buffer_panel_str
 	banksel	EEADR
-	movwf	EEADR			; Write EEPROM offset address
-screen_write_eeprom_2_buffer_read
+	movwf	EEADR						; Write flash offset address
+	movlw	(STR_PANEL_BASE_ADDR >> 8)			; Offset of strings in flash memory (shifted as it's the top bits)
+	movwf	EEADRH
+	goto	screen_write_flash_2_buffer_read
+screen_write_flash_2_buffer_tests_str
+	banksel	EEADR
+	movwf	EEADR						; Write flash offset address
+	movlw	(STR_TESTS_BASE_ADDR >> 8)			; Offset of strings in flash memory (shifted as it's the top bits)
+	movwf	EEADRH
+	goto	screen_write_flash_2_buffer_read
+screen_write_flash_2_buffer
+	banksel	EEADR
+	movwf	EEADR						; Write flash offset address
+screen_write_flash_2_buffer_read
 	banksel	EECON1
-	bcf	EECON1, EEPGD		; Select EEPROM memory
-	bsf	EECON1, RD		; Start read operation
+	bsf	EECON1, EEPGD					; Select Flash memory
+	bsf	EECON1, RD					; Start read operation
+	nop
+	nop							; NOPs required to allow data to load
 	banksel	EEADR
 	incf	EEADR, F
-	movf	EEDATA, W		; Read data
-
+; High 7 bits
+screen_write_flash_2_buffer_read_ascii_high
+	bcf	STATUS, C					; Clear carry before rotate
+	rlf	EEDATH, W					; Top 6 bits (of 7)
+	btfsc	EEDATA, 0x7					; Test the top bit of the lower byte for the LSB
+		addlw	0x1					; Add 1 to set the bit
+	banksel	_mr_screen_buffer_line1
+	movwf	_mr_screen_buffer_temp
+	movf	_mr_screen_buffer_temp, F			; Check if zero
 	btfsc	STATUS, Z
-		goto	screen_write_eeprom_2_buffer_exit
+		goto	screen_write_flash_2_buffer_exit
+	movwf	INDF
+	incf	FSR, F
+
+; Low 7 bits
+screen_write_flash_2_buffer_read_ascii_low
+	banksel	EEDATA
+	movf	EEDATA, W					; Read next character
+	andlw	0x7F						; Remove the top bit from the last character
+	btfsc	STATUS, Z
+		goto	screen_write_flash_2_buffer_exit
 	banksel	_mr_screen_buffer_line1
 	movwf	INDF
 	incf	FSR, F
-	goto	screen_write_eeprom_2_buffer_read
+	goto	screen_write_flash_2_buffer_read
 
-screen_write_eeprom_2_buffer_exit
+screen_write_flash_2_buffer_exit
 	return

@@ -39,7 +39,15 @@
 ; Extended protocol: the address redundancy is removed, but the
 ; address range is extended to 16 bit.
 ;
+; N.B. Last bit of the address ignored to support Avermedia remote.
+; The device uses 2 addresses (02/03) for some reason (34 button
+; device???), with some key codes overlaping, so the address lsb is
+; used to multiplex these buttons.
+;
 ;*******************************************************************
+
+		org	IR_RECVR_BASE_ADDR
+
 ; ir_receiver_timer_init
 ;
 ; Setup Timer1 and CCP2 to produce a 10 kHz interrupt.
@@ -158,59 +166,34 @@ ir_receiver_timer_disable
 ir_receiver_save_receiver_addr
 ; LSB
 ;*******************************************************************
-	banksel	EECON1
-	btfsc	EECON1, WR				; Wait for write
-	goto	$-1					; To finish
+	clrf	PCLATH					; Clear memory paging
+
+	call	pic_eeprom_write_finish_wait
 
 	banksel	EEADR					; Setup data to write
 	movlw	eeprom_ir_addr_lsb - 0x2100
 	movwf	EEADR					; Address to write to
+	clrf	EEADRH					; Clear high address for EEPROM access
 	banksel	_mr_ir_receiver_address_lsb_actual
 	movf	_mr_ir_receiver_address_lsb_actual, W
 	banksel	EEDATA
 	movwf	EEDATA					; Data to write (_mr_ir_receiver_address_lsb_actual)
 
-	banksel	EECON1
-	bcf	EECON1, EEPGD				; Point to Data memory
-	bcf	INTCON, GIE				; Disable interrupts
-	bsf	EECON1, WREN				; Enable writes
-
-	movlw	0x55					; Special sequence, needed for write
-	movwf	EECON2					; Write 55h to EECON2
-	movlw	0xAA
-	movwf	EECON2					; Write AAh to EECON2
-	bsf	EECON1, WR				; Start write operation
-
-	bcf	EECON1, WREN				; Disable writes
-	bsf	INTCON, GIE				; Enable interrupts
+	call	pic_eeprom_write
 
 ; MSB
 ;*******************************************************************
-	banksel	EECON1
-	btfsc	EECON1, WR				; Wait for write
-	goto	$-1					; To finish
+	call	pic_eeprom_write_finish_wait
 
-	banksel	EEADR					; Setup data to write
-	movlw	eeprom_ir_addr_msb - 0x2100
-	movwf	EEADR					; Address to write to
 	banksel	_mr_ir_receiver_address_msb_actual
 	movf	_mr_ir_receiver_address_msb_actual, W
 	banksel	EEDATA
 	movwf	EEDATA					; Data to write (_mr_ir_receiver_address_msb_actual)
 
-	banksel	EECON1
-	bcf	EECON1, EEPGD				; Point to Data memory
-	bcf	INTCON, GIE				; Disable interrupts
-	bsf	EECON1, WREN				; Enable writes
+	call	pic_eeprom_write
 
-	movlw	0x55					; Special sequence, needed for write
-	movwf	EECON2					; Write 55h to EECON2
-	movlw	0xAA
-	movwf	EECON2					; Write AAh to EECON2
-	bsf	EECON1, WR				; Start write operation
-
-	bcf	EECON1, WREN				; Disable writes
-	bsf	INTCON, GIE				; Enable interrupts
+	movlw	(IR_RECVR_BASE_ADDR>>8)			; Restore memory paging
+	movwf	PCLATH
 
 	return
 
@@ -281,21 +264,21 @@ ir_receiver_interrupt_handler_mode_burst_high
 		goto	ir_receiver_interrupt_handler_mode_invalid		; Counter's rolled over, BAD!!!
 	goto	ir_receiver_interrupt_handler_exit
 ir_receiver_interrupt_handler_mode_burst_check
-	movf	_mr_ir_receiver_count_true, W					; Check '1' counter is < 95
-	sublw	0x5F								; 95 - '1' count -> W
+	movf	_mr_ir_receiver_count_true, W					; Check '1' counter is < 100
+	sublw	0x64								; 100 - '1' count -> W
 	btfss	STATUS, C
-		goto    ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's greater than 95
-	movf	_mr_ir_receiver_count_true, W					; Check '1' counter is > 85
-	sublw	0x55								; 85 - '1' count -> W
+		goto    ir_receiver_interrupt_handler_mode_invalid_save_state	; It's invalid as it's greater than 100
+	movf	_mr_ir_receiver_count_true, W					; Check '1' counter is > 80
+	sublw	0x50								; 80 - '1' count -> W
 	btfsc	STATUS, C
-		goto    ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's less than 85
+		goto    ir_receiver_interrupt_handler_mode_invalid_save_state	; It's invalid as it's less than 80
 
-	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is < 50
-	sublw	0x32								; 50 - '0' count -> W
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is < 52
+	sublw	0x34								; 52 - '0' count -> W
 	btfss	STATUS, C
-		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's greater than 50
-	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is > 40
-	sublw	0x28								; 40 - '0' count -> W
+		goto	ir_receiver_interrupt_handler_mode_invalid_save_state	; It's invalid as it's greater than 52
+	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is > 38
+	sublw	0x26								; 38 - '0' count -> W
 	btfsc	STATUS, C
 		goto	ir_receiver_interrupt_handler_mode_burst_repeat_check
 
@@ -303,17 +286,17 @@ ir_receiver_interrupt_handler_mode_burst_check
 	clrf	_mr_ir_receiver_address_msb					; So clear the registers
 	clrf	_mr_ir_receiver_command
 	clrf	_mr_ir_receiver_command_inverted
-	goto	ir_receiver_interrupt_handler_mode_burst_check_verified	; It's valid, as it's greater than 40
+	goto	ir_receiver_interrupt_handler_mode_burst_check_verified	; It's valid, as it's greater than 38
 
 ir_receiver_interrupt_handler_mode_burst_repeat_check
 	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is < 25	(Checking for repeat code)
 	sublw	0x19								; 25 - '0' count -> W
 	btfss	STATUS, C
-		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's greater than 25
+		goto	ir_receiver_interrupt_handler_mode_invalid_save_state	; It's invalid as it's greater than 25
 	movf	_mr_ir_receiver_count_false, W					; Check '0' counter is > 18
 	sublw	0x12								; 18 - '0' count -> W
 	btfsc	STATUS, C
-		goto	ir_receiver_interrupt_handler_mode_invalid		; It's invalid as it's less than 19
+		goto	ir_receiver_interrupt_handler_mode_invalid_save_state	; It's invalid as it's less than 19
 
 										; This is a repeat command
 	clrf	_mr_ir_receiver_count_true					; Clear the sample register
@@ -434,18 +417,46 @@ ir_receiver_interrupt_handler_mode_stop
 		goto	ir_receiver_interrupt_handler_mode_invalid
 
 	movf	_mr_ir_receiver_address_lsb, W					; Check received address against our address (LSB)
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	andlw	0xfe								; Fix the address for Avermedia remote
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	subwf	_mr_ir_receiver_address_lsb_actual, W
 	btfss	STATUS, Z
 		goto	ir_receiver_interrupt_handler_mode_reset		; Addresses don't match, so just reset
+
 	movf	_mr_ir_receiver_address_msb, W					; Check received address against our address (MSB)
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	andlw	0xfe								; Fix the address for Avermedia remote
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	subwf	_mr_ir_receiver_address_msb_actual, W
 	btfss	STATUS, Z
 		goto	ir_receiver_interrupt_handler_mode_reset		; Addresses don't match, so just reset
 
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	btfsc	_mr_ir_receiver_address_lsb, 0x0
+		bsf	_mr_ir_receiver_command,0x6				; Fix command for Avermedia remote
+;////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	movf	_mr_ir_receiver_command, W
 	movwf	_mr_ir_receiver_command_actual					; Command confirmed, move to 'real' command register
 
 	goto	ir_receiver_interrupt_handler_mode_reset			; Reset state
+
+ir_receiver_interrupt_handler_mode_invalid_save_state
+	movlw	0xF0
+	andwf	_mr_ir_receiver_count_false, W
+	btfsc	STATUS, Z
+		goto	ir_receiver_interrupt_handler_mode_invalid
+	movlw	0xF0
+	andwf	_mr_ir_receiver_count_true, W
+	btfsc	STATUS, Z
+		goto	ir_receiver_interrupt_handler_mode_invalid
+
+	movf	_mr_ir_receiver_state, W					; Save the data that caused an error
+	movwf	_mr_ir_receiver_state_on_err
+	movf	_mr_ir_receiver_count_false, W
+	movwf	_mr_ir_receiver_count_false_on_err
+	movf	_mr_ir_receiver_count_true, W
+	movwf	_mr_ir_receiver_count_true_on_err
 
 ir_receiver_interrupt_handler_mode_invalid
 	incf	_mr_ir_receiver_error_count, F					; Increment the error count
@@ -460,531 +471,3 @@ ir_receiver_interrupt_handler_exit
 	bcf	PIR2, CCP2IF							; Clear CCP2 interrupt flag
 
 	return
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Button Codes
-;
-; Button code to function translation table. The button
-; code (in W) is added to the start of the table to get
-; the function value.
-;
-; This has to be editted for a particular remote.
-;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-	org	0xEFF				; Locate the table at the end of the memory space (so it's at a fixed position)
-						; This is a VERY!!! fixed position, so that we don't roll over on the add
-ir_receiver_bc_2_cmd_table
-	addwf	PCL, F				; Increment the program counter using button code to get the command value
-
-; Comand code 0
-	retlw   CMD_NONE
-; Comand code 1
-	retlw   CMD_NONE
-; Comand code 2
-	retlw   CMD_NONE
-; Comand code 3
-	retlw   CMD_NONE
-; Comand code 4
-	retlw   CMD_NONE
-; Comand code 5
-	retlw   CMD_NONE
-; Comand code 6
-	retlw   CMD_NONE
-; Comand code 7
-	retlw   CMD_NONE
-; Comand code 8
-	retlw   CMD_NONE
-; Comand code 9
-	retlw   CMD_NONE
-; Comand code 10
-	retlw   CMD_NONE
-; Comand code 11
-	retlw   CMD_NONE
-; Comand code 12
-	retlw   CMD_NONE
-; Comand code 13
-	retlw   CMD_NONE
-; Comand code 14
-	retlw   CMD_NONE
-; Comand code 15
-	retlw   CMD_NONE
-; Comand code 16
-	retlw   CMD_NONE
-; Comand code 17
-	retlw   CMD_NONE
-; Comand code 18
-	retlw   CMD_NONE
-; Comand code 19
-	retlw   CMD_NONE
-; Comand code 20
-	retlw   CMD_NONE
-; Comand code 21
-	retlw   CMD_NONE
-; Comand code 22
-	retlw   CMD_NONE
-; Comand code 23
-	retlw   CMD_NONE
-; Comand code 24
-	retlw   CMD_NONE
-; Comand code 25
-	retlw   CMD_NONE
-; Comand code 26
-	retlw   CMD_NONE
-; Comand code 27
-	retlw   CMD_NONE
-; Comand code 28
-	retlw   CMD_POWER
-; Comand code 29
-	retlw   CMD_NONE
-; Comand code 30
-	retlw   CMD_NONE
-; Comand code 31
-	retlw   CMD_NONE
-; Comand code 32
-	retlw   CMD_NONE
-; Comand code 33
-	retlw   CMD_NONE
-; Comand code 34
-	retlw   CMD_NONE
-; Comand code 35
-	retlw   CMD_NONE
-; Comand code 36
-	retlw   CMD_NONE
-; Comand code 37
-	retlw   CMD_NONE
-; Comand code 38
-	retlw   CMD_NONE
-; Comand code 39
-	retlw   CMD_NONE
-; Comand code 40
-	retlw   CMD_NONE
-; Comand code 41
-	retlw   CMD_NONE
-; Comand code 42
-	retlw   CMD_NONE
-; Comand code 43
-	retlw   CMD_NONE
-; Comand code 44
-	retlw   CMD_NONE
-; Comand code 45
-	retlw   CMD_NONE
-; Comand code 46
-	retlw   CMD_NONE
-; Comand code 47
-	retlw   CMD_NONE
-; Comand code 48
-	retlw   CMD_NONE
-; Comand code 49
-	retlw   CMD_NONE
-; Comand code 50
-	retlw   CMD_NONE
-; Comand code 51
-	retlw   CMD_NONE
-; Comand code 52
-	retlw   CMD_NONE
-; Comand code 53
-	retlw   CMD_NONE
-; Comand code 54
-	retlw   CMD_NONE
-; Comand code 55
-	retlw   CMD_NONE
-; Comand code 56
-	retlw   CMD_NONE
-; Comand code 57
-	retlw   CMD_NONE
-; Comand code 58
-	retlw   CMD_NONE
-; Comand code 59
-	retlw   CMD_NONE
-; Comand code 60
-	retlw   CMD_NONE
-; Comand code 61
-	retlw   CMD_NONE
-; Comand code 62
-	retlw   CMD_NONE
-; Comand code 63
-	retlw   CMD_NONE
-; Comand code 64
-	retlw   CMD_NONE
-; Comand code 65
-	retlw   CMD_NONE
-; Comand code 66
-	retlw   CMD_NONE
-; Comand code 67
-	retlw   CMD_NONE
-; Comand code 68
-	retlw   CMD_NONE
-; Comand code 69
-	retlw   CMD_NONE
-; Comand code 70
-	retlw   CMD_NONE
-; Comand code 71
-	retlw   CMD_NONE
-; Comand code 72
-	retlw   CMD_NONE
-; Comand code 73
-	retlw   CMD_NONE
-; Comand code 74
-	retlw   CMD_NONE
-; Comand code 75
-	retlw   CMD_NONE
-; Comand code 76
-	retlw   CMD_NONE
-; Comand code 77
-	retlw   CMD_NONE
-; Comand code 78
-	retlw   CMD_NONE
-; Comand code 79
-	retlw   CMD_NONE
-; Comand code 80
-	retlw   CMD_NONE
-; Comand code 81
-	retlw   CMD_NONE
-; Comand code 82
-	retlw   CMD_NONE
-; Comand code 83
-	retlw   CMD_NONE
-; Comand code 84
-	retlw   CMD_NONE
-; Comand code 85
-	retlw   CMD_NONE
-; Comand code 86
-	retlw   CMD_NONE
-; Comand code 87
-	retlw   CMD_NONE
-; Comand code 88
-	retlw   CMD_NONE
-; Comand code 89
-	retlw   CMD_NONE
-; Comand code 90
-	retlw   CMD_NONE
-; Comand code 91
-	retlw   CMD_NONE
-; Comand code 92
-	retlw   CMD_NONE
-; Comand code 93
-	retlw   CMD_NONE
-; Comand code 94
-	retlw   CMD_NONE
-; Comand code 95
-	retlw   CMD_NONE
-; Comand code 96
-	retlw   CMD_NONE
-; Comand code 97
-	retlw   CMD_NONE
-; Comand code 98
-	retlw   CMD_NONE
-; Comand code 99
-	retlw   CMD_NONE
-; Comand code 100
-	retlw   CMD_NONE
-; Comand code 101
-	retlw   CMD_NONE
-; Comand code 102
-	retlw   CMD_NONE
-; Comand code 103
-	retlw   CMD_NONE
-; Comand code 104
-	retlw   CMD_NONE
-; Comand code 105
-	retlw   CMD_NONE
-; Comand code 106
-	retlw   CMD_NONE
-; Comand code 107
-	retlw   CMD_NONE
-; Comand code 108
-	retlw   CMD_NONE
-; Comand code 109
-	retlw   CMD_NONE
-; Comand code 110
-	retlw   CMD_NONE
-; Comand code 111
-	retlw   CMD_NONE
-; Comand code 112
-	retlw   CMD_NONE
-; Comand code 113
-	retlw   CMD_NONE
-; Comand code 114
-	retlw   CMD_NONE
-; Comand code 115
-	retlw   CMD_NONE
-; Comand code 116
-	retlw   CMD_NONE
-; Comand code 117
-	retlw   CMD_NONE
-; Comand code 118
-	retlw   CMD_NONE
-; Comand code 119
-	retlw   CMD_NONE
-; Comand code 120
-	retlw   CMD_NONE
-; Comand code 121
-	retlw   CMD_NONE
-; Comand code 122
-	retlw   CMD_NONE
-; Comand code 123
-	retlw   CMD_NONE
-; Comand code 124
-	retlw   CMD_NONE
-; Comand code 125
-	retlw   CMD_NONE
-; Comand code 126
-	retlw   CMD_NONE
-; Comand code 127
-	retlw   CMD_NONE
-; Comand code 128
-	retlw   CMD_NONE
-; Comand code 129
-	retlw   CMD_NONE
-; Comand code 130
-	retlw   CMD_NONE
-; Comand code 131
-	retlw   CMD_NONE
-; Comand code 132
-	retlw   CMD_NONE
-; Comand code 133
-	retlw   CMD_NONE
-; Comand code 134
-	retlw   CMD_NONE
-; Comand code 135
-	retlw   CMD_NONE
-; Comand code 136
-	retlw   CMD_NONE
-; Comand code 137
-	retlw   CMD_NONE
-; Comand code 138
-	retlw   CMD_NONE
-; Comand code 139
-	retlw   CMD_NONE
-; Comand code 140
-	retlw   CMD_NONE
-; Comand code 141
-	retlw   CMD_NONE
-; Comand code 142
-	retlw   CMD_NONE
-; Comand code 143
-	retlw   CMD_NONE
-; Comand code 144
-	retlw   CMD_NONE
-; Comand code 145
-	retlw   CMD_NONE
-; Comand code 146
-	retlw   CMD_NONE
-; Comand code 147
-	retlw   CMD_NONE
-; Comand code 148
-	retlw   CMD_NONE
-; Comand code 149
-	retlw   CMD_NONE
-; Comand code 150
-	retlw   CMD_NONE
-; Comand code 151
-	retlw   CMD_NONE
-; Comand code 152
-	retlw   CMD_NONE
-; Comand code 153
-	retlw   CMD_NONE
-; Comand code 154
-	retlw   CMD_NONE
-; Comand code 155
-	retlw   CMD_NONE
-; Comand code 156
-	retlw   CMD_NONE
-; Comand code 157
-	retlw   CMD_NONE
-; Comand code 158
-	retlw   CMD_NONE
-; Comand code 159
-	retlw   CMD_NONE
-; Comand code 160
-	retlw   CMD_NONE
-; Comand code 161
-	retlw   CMD_NONE
-; Comand code 162
-	retlw   CMD_NONE
-; Comand code 163
-	retlw   CMD_NONE
-; Comand code 164
-	retlw   CMD_NONE
-; Comand code 165
-	retlw   CMD_NONE
-; Comand code 166
-	retlw   CMD_NONE
-; Comand code 167
-	retlw   CMD_NONE
-; Comand code 168
-	retlw   CMD_NONE
-; Comand code 169
-	retlw   CMD_NONE
-; Comand code 170
-	retlw   CMD_NONE
-; Comand code 171
-	retlw   CMD_NONE
-; Comand code 172
-	retlw   CMD_NONE
-; Comand code 173
-	retlw   CMD_NONE
-; Comand code 174
-	retlw   CMD_NONE
-; Comand code 175
-	retlw   CMD_NONE
-; Comand code 176
-	retlw   CMD_NONE
-; Comand code 177
-	retlw   CMD_NONE
-; Comand code 178
-	retlw   CMD_NONE
-; Comand code 179
-	retlw   CMD_NONE
-; Comand code 180
-	retlw   CMD_NONE
-; Comand code 181
-	retlw   CMD_NONE
-; Comand code 182
-	retlw   CMD_NONE
-; Comand code 183
-	retlw   CMD_NONE
-; Comand code 184
-	retlw   CMD_NONE
-; Comand code 185
-	retlw   CMD_NONE
-; Comand code 186
-	retlw   CMD_NONE
-; Comand code 187
-	retlw   CMD_NONE
-; Comand code 188
-	retlw   CMD_NONE
-; Comand code 189
-	retlw   CMD_NONE
-; Comand code 190
-	retlw   CMD_NONE
-; Comand code 191
-	retlw   CMD_NONE
-; Comand code 192
-	retlw   CMD_NONE
-; Comand code 193
-	retlw   CMD_NONE
-; Comand code 194
-	retlw   CMD_NONE
-; Comand code 195
-	retlw   CMD_NONE
-; Comand code 196
-	retlw   CMD_NONE
-; Comand code 197
-	retlw   CMD_NONE
-; Comand code 198
-	retlw   CMD_NONE
-; Comand code 199
-	retlw   CMD_NONE
-; Comand code 200
-	retlw   CMD_NONE
-; Comand code 201
-	retlw   CMD_NONE
-; Comand code 202
-	retlw   CMD_NONE
-; Comand code 203
-	retlw   CMD_NONE
-; Comand code 204
-	retlw   CMD_NONE
-; Comand code 205
-	retlw   CMD_NONE
-; Comand code 206
-	retlw   CMD_NONE
-; Comand code 207
-	retlw   CMD_NONE
-; Comand code 208
-	retlw   CMD_NONE
-; Comand code 209
-	retlw   CMD_NONE
-; Comand code 210
-	retlw   CMD_NONE
-; Comand code 211
-	retlw   CMD_NONE
-; Comand code 212
-	retlw   CMD_NONE
-; Comand code 213
-	retlw   CMD_NONE
-; Comand code 214
-	retlw   CMD_NONE
-; Comand code 215
-	retlw   CMD_NONE
-; Comand code 216
-	retlw   CMD_NONE
-; Comand code 217
-	retlw   CMD_NONE
-; Comand code 218
-	retlw   CMD_NONE
-; Comand code 219
-	retlw   CMD_NONE
-; Comand code 220
-	retlw   CMD_NONE
-; Comand code 221
-	retlw   CMD_NONE
-; Comand code 222
-	retlw   CMD_NONE
-; Comand code 223
-	retlw   CMD_NONE
-; Comand code 224
-	retlw   CMD_NONE
-; Comand code 225
-	retlw   CMD_NONE
-; Comand code 226
-	retlw   CMD_NONE
-; Comand code 227
-	retlw   CMD_NONE
-; Comand code 228
-	retlw   CMD_NONE
-; Comand code 229
-	retlw   CMD_NONE
-; Comand code 230
-	retlw   CMD_NONE
-; Comand code 231
-	retlw   CMD_NONE
-; Comand code 232
-	retlw   CMD_NONE
-; Comand code 233
-	retlw   CMD_NONE
-; Comand code 234
-	retlw   CMD_NONE
-; Comand code 235
-	retlw   CMD_NONE
-; Comand code 236
-	retlw   CMD_NONE
-; Comand code 237
-	retlw   CMD_NONE
-; Comand code 238
-	retlw   CMD_NONE
-; Comand code 239
-	retlw   CMD_NONE
-; Comand code 240
-	retlw   CMD_NONE
-; Comand code 241
-	retlw   CMD_NONE
-; Comand code 242
-	retlw   CMD_NONE
-; Comand code 243
-	retlw   CMD_NONE
-; Comand code 244
-	retlw   CMD_NONE
-; Comand code 245
-	retlw   CMD_NONE
-; Comand code 246
-	retlw   CMD_NONE
-; Comand code 247
-	retlw   CMD_NONE
-; Comand code 248
-	retlw   CMD_NONE
-; Comand code 249
-	retlw   CMD_NONE
-; Comand code 250
-	retlw   CMD_NONE
-; Comand code 251
-	retlw   CMD_NONE
-; Comand code 252
-	retlw   CMD_NONE
-; Comand code 253
-	retlw   CMD_NONE
-; Comand code 254
-	retlw   CMD_NONE
-; Comand code 255
-	retlw   CMD_NONE

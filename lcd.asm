@@ -406,13 +406,9 @@ LCD_CLEAR_CHARS_LOOP
 LCD_WRITE_EEPROM_2_BUFFER
 	banksel	EEADR
 	movwf	EEADR			; Write EEPROM offset address
+	clrf	EEADRH			; Clear high address for EEPROM access
 LCD_WRITE_EEPROM_2_BUFFER_READ
-	banksel	EECON1
-	bcf	EECON1, EEPGD		; Select EEPROM memory
-	bsf	EECON1, RD		; Start read operation
-	banksel	EEADR
-	incf	EEADR, F
-	movf	EEDATA, W		; Read data
+	call	pic_eeprom_read
 
 	btfsc   STATUS, Z
 		goto	LCD_WRITE_EEPROM_2_BUFFER_EXIT
