@@ -54,27 +54,27 @@ BUTTON_BIT_RB2_RGHT	EQU	1
 ; Read switch arrays into button buffers
 ;***********************************************************************
 read_buttons
-	bsf	STATUS, RP0
-	bcf	STATUS, RP1
+	banksel	TRISD
 	movf	TRISD, W
 	movwf	_mr_oldxtris			; Save the TRISD state
 	movlw	0xFF
 	movwf	TRISD				; Set PortD to all inputs
-	bcf	STATUS, RP0
 
 	call	read_buttons_RB1		; Read bank 1
+	banksel	_mr_button_bank
 	movwf	_mr_button_bank
 
 	call	read_buttons_RB2		; Read bank 2
+	banksel	_mr_button_bank
 	movwf	(_mr_button_bank + 1)
 
 	call	read_buttons_RC2		; Read bank 3
+	banksel	_mr_button_bank
 	movwf	(_mr_button_bank + 2)
 
-	bsf	STATUS, RP0
+	banksel	TRISD
 	movf	_mr_oldxtris,W			; Restore TRISD state
 	movwf	TRISD
-	bcf	STATUS, RP0
 
 	return
 
@@ -82,17 +82,16 @@ read_buttons
 ; Read the switch array selected by RB1
 ;***********************************************************************
 read_buttons_RB1
-	bsf	STATUS, RP0
-	bcf     TRISB, 0x1			; Set as Output
-	bcf	STATUS, RP0
+	banksel	TRISB
+	bcf	TRISB, 0x1			; Set as Output
 
-	bcf     PORTB, 0x1
-	comf    PORTD, W
-	bsf     PORTB, 0x1
+	banksel	PORTB
+	bcf	PORTB, 0x1
+	comf	PORTD, W
+	bsf	PORTB, 0x1
 
-	bsf	STATUS, RP0
-	bsf     TRISB, 0x1			; Reset to input
-	bcf	STATUS, RP0
+	banksel	TRISB
+	bsf	TRISB, 0x1			; Reset to input
 
 	return
 
@@ -100,17 +99,16 @@ read_buttons_RB1
 ; Read the switch array selected by RB2
 ;***********************************************************************
 read_buttons_RB2
-	bsf	STATUS, RP0
-	bcf     TRISB, 0x2			; Set as Output
-	bcf	STATUS, RP0
+	banksel	TRISB
+	bcf	TRISB, 0x2			; Set as Output
 
-	bcf     PORTB, 0x2
-	comf    PORTD, W
-	bsf     PORTB, 0x2
+	banksel	PORTB
+	bcf	PORTB, 0x2
+	comf	PORTD, W
+	bsf	PORTB, 0x2
 
-	bsf	STATUS, RP0
-	bsf     TRISB, 0x2			; Reset to input
-	bcf	STATUS, RP0
+	banksel	TRISB
+	bsf	TRISB, 0x2			; Reset to input
 
 	return
 
@@ -118,17 +116,16 @@ read_buttons_RB2
 ; Read the switch array selected by RC2
 ;***********************************************************************
 read_buttons_RC2
-	bsf	STATUS, RP0
-	bcf     TRISC, 0x2			; Set as Output
-	bcf	STATUS, RP0
+	banksel	TRISC
+	bcf	TRISC, 0x2			; Set as Output
 
-	bcf     PORTC, 0x2
-	comf    PORTD, W
-	bsf     PORTC, 0x2
+	banksel	PORTC
+	bcf	PORTC, 0x2
+	comf	PORTD, W
+	bsf	PORTC, 0x2
 
-	bsf	STATUS, RP0
-	bsf     TRISC, 0x2			; Reset to input
-	bcf	STATUS, RP0
+	banksel	TRISC
+	bsf	TRISC, 0x2			; Reset to input
 
 	return
 

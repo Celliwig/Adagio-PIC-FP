@@ -22,42 +22,58 @@ UF_SELECT_NEXT          equ     0
 UF_SELECT_PREV          equ     1
 
 ;*******************************************************************
+; LCD_PORT_CONFIGURE
 ;
-
+; Configures the correct PIC ports to driver the LCD
+;
+; Registers used:
+;	this: W	(temporarily store TRIS value)
+;	this: _mr_oldxtris
+;	this: _mr_oldytris
+;
 LCD_PORT_CONFIGURE
-        BSF     STATUS, RP0             	; Select Register page 1
-	MOVF	LCD_CONTROL_TRIS, W		; Save port configuration
-        BCF	LCD_CONTROL_TRIS, LCD_E		;Initialize the LCD_PORT control and data lines to outputs
-        BCF	LCD_CONTROL_TRIS, LCD_R_W
-        BCF	LCD_CONTROL_TRIS, LCD_RS
-        BCF     STATUS, RP0			; Select Register page 0
-	MOVWF	_mr_oldxtris
+	banksel	LCD_CONTROL_TRIS
+	movf	LCD_CONTROL_TRIS, W		; Save port configuration
+	bcf	LCD_CONTROL_TRIS, LCD_E		; Initialize the LCD_PORT control and data lines to outputs
+	bcf	LCD_CONTROL_TRIS, LCD_R_W
+	bcf	LCD_CONTROL_TRIS, LCD_RS
+	banksel	_mr_oldxtris
+	movwf	_mr_oldxtris
 
+	banksel	LCD_DATA_TRIS
+	movf	LCD_DATA_TRIS, W		; Save port configuration
+	clrf	LCD_DATA_TRIS			; Make LCD_PORT IO lines outputs
+	banksel	_mr_oldytris
+	movwf	_mr_oldytris
 
-        BSF     STATUS, RP0             	; Select Register page 1
-	MOVF	LCD_DATA_TRIS, W		; Save port configuration
-	CLRF	LCD_DATA_TRIS			; Make LCD_PORT IO lines outputs
-	BCF     STATUS, RP0			; Select Register page 0
-	MOVWF	_mr_oldytris
+	return
 
-	RETURN
-
+;*******************************************************************
+; LCD_PORT_RESTORE
+;
+; Restores the original port configuration to the PIC
+;
+; Registers used:
+;	this: W	(temporarily store TRIS value)
+;	this: _mr_oldxtris
+;	this: _mr_oldytris
+;
 LCD_PORT_RESTORE
-	;Restore the LCD_PORT control and data lines to outputs
-	MOVF	_mr_oldxtris, W
-        BSF     STATUS, RP0             ; Select Register page 1
-        MOVWF   LCD_CONTROL_TRIS        ; Make LCD_PORT IO lines outputs
-        BCF     STATUS, RP0             ; Select Register page 0
+	banksel	_mr_oldxtris
+	movf	_mr_oldxtris, W
+	banksel	LCD_CONTROL_TRIS
+	movwf	LCD_CONTROL_TRIS	; Make LCD_PORT IO lines outputs
 
-	MOVF	_mr_oldytris, W
-        BSF     STATUS, RP0             ; Select Register page 1
-        MOVWF   LCD_DATA_TRIS           ; Make LCD_PORT IO lines outputs
-        BCF     STATUS, RP0             ; Select Register page 0
+	banksel	_mr_oldytris
+	movf	_mr_oldytris, W
+	banksel	LCD_DATA_TRIS
+	movwf	LCD_DATA_TRIS		; Make LCD_PORT IO lines outputs
 
-	RETURN
+	return
 
-;LCD_INITIALIZE
-;  Right now, the display could be either in 8-bit mode if we
+;*******************************************************************
+; LCD_INITIALIZE
+; Right now, the display could be either in 8-bit mode if we
 ; just powered up, or it could be in 4-bit mode if we just
 ; experienced a reset. So to begin, we have to initialize the
 ; display to a known state: the 8-bit mode. This is done by
@@ -65,250 +81,307 @@ LCD_PORT_RESTORE
 ; bit set. We need to do this 3 times!
 
 LCD_INITIALIZE
+	call	LCD_PORT_CONFIGURE
 
-	CALL LCD_PORT_CONFIGURE
-
-        MOVLW   3
-        MOVWF   _mr_lcd_loop1		; Use _mr_lcd_loop1 as a loop counter
-        BCF     LCD_CONTROL_PORT, LCD_E
-        BCF     LCD_CONTROL_PORT, LCD_RS
-        BCF     LCD_CONTROL_PORT, LCD_R_W
+	movlw	3
+	banksel	_mr_lcd_loop
+	movwf	_mr_lcd_loop				; Use _mr_lcd_loop as a loop counter
+	banksel	LCD_CONTROL_PORT
+	bcf	LCD_CONTROL_PORT, LCD_E
+	bcf	LCD_CONTROL_PORT, LCD_RS
+	bcf	LCD_CONTROL_PORT, LCD_R_W
 
 lcd_init_8bit:
-        CALL    LCD_DELAY
+	call	LCD_DELAY
 
-        MOVF    LCD_DATA_PORT,W
-        IORLW   (LCD_CMD_FUNC_SET | LCD_8bit_MODE) >> LCD_DATA_SHIFT
-        MOVWF   LCD_DATA_PORT           ;Put command on the bus
+	banksel	LCD_DATA_PORT
+	movf	LCD_DATA_PORT, W
+	iorlw	(LCD_CMD_FUNC_SET | LCD_8bit_MODE) >> LCD_DATA_SHIFT
+	movwf	LCD_DATA_PORT				; Put command on the bus
 
-        GOTO    $+1
-        BSF     LCD_CONTROL_PORT, LCD_E ;Enable the LCD, i.e. write the command.
-        GOTO    $+1                     ;NOP's are only needed for 20Mhz crystal
-        GOTO    $+1
-        BCF     LCD_CONTROL_PORT, LCD_E ;Disable the LCD
+	goto	$+1
+	bsf	LCD_CONTROL_PORT, LCD_E			; Enable the LCD, i.e. write the command.
+	goto	$+1					; NOP's are only needed for 20Mhz crystal
+	goto	$+1
+	bcf	LCD_CONTROL_PORT, LCD_E			; Disable the LCD
 
-        DECFSZ  _mr_lcd_loop1, F
-        GOTO    lcd_init_8bit
+	banksel	_mr_lcd_loop
+	decfsz	_mr_lcd_loop, F
+	goto	lcd_init_8bit
 
-;   ;Now we are in 4-bit mode. This means that all reads and writes of bytes have to be done
-;   ;a nibble at a time. But that's all taken care of by the read/write functions.
-;   ;Set up the display to have 2 lines and the small (5x7 dot) font.
-;
-;        MOVLW   LCD_CMD_FUNC_SET | LCD_4bit_MODE | LCD_2_LINES | LCD_SMALL_FONT
-;        CALL    LCD_WRITE_CMD
+	movlw	LCD_CMD_FUNC_SET | LCD_8bit_MODE | LCD_2_LINES | LCD_SMALL_FONT
+	call	LCD_WRITE_CMD
 
-        MOVLW   LCD_CMD_FUNC_SET | LCD_8bit_MODE | LCD_2_LINES | LCD_SMALL_FONT
-        CALL    LCD_WRITE_CMD
+	; Turn on the display and turn off the cursor. Set the cursor to the non-blink mode
+	movlw	LCD_CMD_DISPLAY_CTRL | LCD_DISPLAY_ON | LCD_CURSOR_OFF | LCD_BLINK_OFF
+	call	LCD_WRITE_CMD
 
-   ;Turn on the display and turn off the cursor. Set the cursor to the non-blink mode
+	; Clear the display memory. This command also moves the cursor to the home position
+	movlw	LCD_CMD_CLEAR_DISPLAY
+	call	LCD_WRITE_CMD
 
-        MOVLW   LCD_CMD_DISPLAY_CTRL | LCD_DISPLAY_ON | LCD_CURSOR_OFF | LCD_BLINK_OFF
-        CALL    LCD_WRITE_CMD
+	; Set up the cursor mode
+	movlw	LCD_CMD_ENTRY_MODE | LCD_INC_CURSOR_POS | LCD_NO_SCROLL
+	call	LCD_WRITE_CMD
 
-   ;Clear the display memory. This command also moves the cursor to the home position.
+	; Set the Display Data RAM address to 0
+	movlw	LCD_CMD_SET_DDRAM
+	call	LCD_WRITE_CMD
 
-        MOVLW   LCD_CMD_CLEAR_DISPLAY
-        CALL    LCD_WRITE_CMD
+	call	LCD_PORT_RESTORE
 
-   ;Set up the cursor mode.
-
-        MOVLW   LCD_CMD_ENTRY_MODE | LCD_INC_CURSOR_POS | LCD_NO_SCROLL
-        CALL    LCD_WRITE_CMD
-
-   ;Set the Display Data RAM address to 0
-
-        MOVLW   LCD_CMD_SET_DDRAM
-        CALL    LCD_WRITE_CMD
-
-        CALL    LCD_CLEAR_SCREEN
-
-	CALL	LCD_PORT_RESTORE
-
-        RETURN
+	return
 
 ;*******************************************************************
 ;LCD_DELAY
 ; This routine takes the calculated times that the delay loop needs to
-;be executed, based on the LCD_INIT_DELAY EQUate that includes the
-;frequency of operation.
+; be executed, based on the LCD_INIT_DELAY EQUate that includes the
+; frequency of operation.
 ;
-; _mr_lcd_loop1 already in use
 ;
-LCD_DELAY	MOVLW   LCD_INIT_DELAY
-LCD_A_DELAY	MOVWF   _mr_lcd_loop2		; Use _mr_lcd_loop2 and _mr_lcd_loop3
-		CLRF    _mr_lcd_loop3
-LCD_LOOP2	DECFSZ  _mr_lcd_loop3, F		; Delay time = _mr_lcd_loop2 * ((3 * 256) + 3) * Tcy
-		GOTO	LCD_LOOP2		;            = _mr_lcd_loop2 * 154.2 (20Mhz clock)
-		DECFSZ  _mr_lcd_loop2, F
-		GOTO    LCD_LOOP2
+; Registers used:
+;	this: W (only on call of LCD_DELAY, not LCD_A_DELAY)
+;	this: _mr_lcd_delayloop1
+;	this: _mr_lcd_delayloop2
+;
+
+LCD_DELAY
+		movlw	LCD_INIT_DELAY
+LCD_A_DELAY
+		banksel	_mr_lcd_delayloop1
+		movwf	_mr_lcd_delayloop1
+		clrf	_mr_lcd_delayloop2
+LCD_DELAY_LOOP
+		decfsz	_mr_lcd_delayloop2, F		; Delay time = _mr_lcd_delayloop1 * ((3 * 256) + 3) * Tcy
+			goto	LCD_DELAY_LOOP		;            = _mr_lcd_delayloop2 * 154.2 (20Mhz clock)
+		decfsz	_mr_lcd_delayloop1, F
+			goto	LCD_DELAY_LOOP
 		RETURN
 
 ;*******************************************************************
-;LCD_TOGGLE_E
-;  This routine toggles the "E" bit (enable) on the LCD module. The contents
-;of W contain the state of the R/W and RS bits along with the data that's
-;to be written (that is if data is to be written). The contents of the LCD port
-;while E is active are returned in W.
-
+; LCD_TOGGLE_E
+;
+; This routine toggles the "E" bit (enable) on the LCD module. The contents
+; of W contain the state of the R/W and RS bits along with the data that's
+; to be written (that is if data is to be written). The contents of the LCD port
+; while E is active are returned in W.
+;
+; Registers used:
+;	W (used to return lcd data)
+;
 LCD_TOGGLE_E
-        BCF  LCD_CONTROL_PORT,LCD_E     ;Make sure E is low
-LCD_LTE1:
-	NOP				;Delays needed primarily for 10Mhz and faster clocks
-;	NOP
-;	NOP
-;	NOP
-        BTFSC   LCD_CONTROL_PORT, LCD_E ;E is low the first time through the loop
-		goto	LCD_LTE2
+	banksel	LCD_CONTROL_PORT
 
-        BSF     LCD_CONTROL_PORT, LCD_E ;Make E high and go through the loop again
-		GOTO	LCD_LTE1
+	call	LCD_DROP_E			; Make sure E is low
+LCD_LTE1:
+	btfsc	LCD_CONTROL_PORT, LCD_E		; E is low the first time through the loop
+		goto	LCD_LTE2
+	call	LCD_RAISE_E			; Make E high and go through the loop again
+	goto	LCD_LTE1
 LCD_LTE2:
-        MOVF    LCD_DATA_PORT, W        ;Read the LCD Data bus
-        BCF     LCD_CONTROL_PORT, LCD_E ;Turn off E
-        RETURN
+	movf	LCD_DATA_PORT, W		; Read the LCD Data bus
+	bcf	LCD_CONTROL_PORT, LCD_E		; Turn off E
+	return
 
 LCD_DROP_E
-        BCF  LCD_CONTROL_PORT,LCD_E     ;Make sure E is low
-	NOP				;Delays needed primarily for 10Mhz and faster clocks
-;	NOP
-;	NOP
-;	NOP
-        RETURN
+	bcf	LCD_CONTROL_PORT, LCD_E		; Make sure E is low
+	nop					; Delays needed primarily for 10Mhz and faster clocks
+;	nop
+;	nop
+;	nop
+	return
 
 LCD_RAISE_E
-        BSF  LCD_CONTROL_PORT,LCD_E     ;Make sure E is high
-	NOP				;Delays needed primarily for 10Mhz and faster clocks
-;	NOP
-;	NOP
-;	NOP
-        RETURN
-
+	bsf	LCD_CONTROL_PORT, LCD_E		; Make sure E is high
+	nop					; Delays needed primarily for 10Mhz and faster clocks
+;	nop
+;	nop
+;	nop
+	return
 
 ;*******************************************************************
-;LCD_WRITE_DATA - Sends a character to LCD
+; LCD_WRITE_DATA
 ;
-; Memory used:
-;    LCD_CHAR,
-; Calls
-;    LCD_TOGGLE_E
+; Sends a character to LCD. Character is in W.
+;
+; Registers used:
+;	this: W (character to write to lcd)
+;	this: _mr_lcd_temp (temporarily store character)
+;	LCD_BUSY_CHECK: W (flag check, number of times to loop in LCD_A_DELAY, and value read from LCD)
+;	LCD_BUSY_CHECK: _mr_lcd_delayloop1
+;	LCD_BUSY_CHECK: _mr_lcd_delayloop2
 ;
 LCD_WRITE_DATA
-        MOVWF   _mr_char_buffer		; Character to be sent is in W
-        CALL    LCD_BUSY_CHECK		; Wait for LCD to be ready
+	banksel	_mr_lcd_temp
+	movwf	_mr_lcd_temp
+	call	LCD_BUSY_CHECK		; Wait for LCD to be ready
+	banksel	_mr_lcd_temp
+	movf	_mr_lcd_temp, W
 
-        BSF     LCD_CONTROL_PORT,LCD_RS
-        BCF     LCD_CONTROL_PORT,LCD_R_W
-        GOTO    LCD_WRITE
+	banksel	LCD_CONTROL_PORT
+	bsf	LCD_CONTROL_PORT, LCD_RS
+	bcf	LCD_CONTROL_PORT, LCD_R_W
+	goto	LCD_WRITE
 
 ;*******************************************************************
-;LCD_WRITE_CMD
+; LCD_WRITE_CMD
 ;
-;  This routine splits the command into the upper and lower
-;nibbles and sends them to the LCD, upper nibble first.
-
+; Writes a command (as opposed to data) to the LCD. Command is in W
+;
+; Registers used:
+;	this: W (command to write to lcd)
+;	this: _mr_lcd_temp (temporarily store character)
+;	LCD_BUSY_CHECK: W (flag check, number of times to loop in LCD_A_DELAY, and value read from LCD)
+;	LCD_BUSY_CHECK: _mr_lcd_delayloop1
+;	LCD_BUSY_CHECK: _mr_lcd_delayloop2
+;
 LCD_WRITE_CMD
-        MOVWF   _mr_char_buffer		; Character to be sent is in W
+	banksel	_mr_lcd_temp
+	movwf	_mr_lcd_temp
+	call	LCD_BUSY_CHECK		; Wait for LCD to be ready
+	banksel	_mr_lcd_temp
+	movf	_mr_lcd_temp, W
 
-        CALL    LCD_BUSY_CHECK		; Wait for LCD to be ready
-
-   ;Both R_W and RS should be low
-        BCF     LCD_CONTROL_PORT,LCD_RS
-        BCF     LCD_CONTROL_PORT,LCD_R_W
-        GOTO    LCD_WRITE
-
-;*******************************************************************
-LCD_WRITE
-        CALL    LCD_RAISE_E
-        MOVF    _mr_char_buffer, w
-        MOVWF   LCD_DATA_PORT
-        CALL    LCD_DROP_E
-	RETURN
+	;Both R_W and RS should be low
+	banksel	LCD_CONTROL_PORT
+	bcf	LCD_CONTROL_PORT, LCD_RS
+	bcf	LCD_CONTROL_PORT, LCD_R_W
+	goto	LCD_WRITE
 
 ;*******************************************************************
-;LCD_READ_DATA
-;This routine will read 8 bits of data from the LCD. Since we're using
-;4-bit mode, two passes have to be made. On the first pass we read the
-;upper nibble, and on the second the lower.
+; LCD_WRITE
 ;
-LCD_READ_DATA
-	CALL    LCD_BUSY_CHECK
+; Write the contents of W to the LCD
+;
+; Registers used:
+;
+LCD_WRITE
+	call	LCD_RAISE_E
+	movwf	LCD_DATA_PORT
+	call	LCD_DROP_E
+	return
 
-					;For a data read, RS and R/W should be high
-	BSF     LCD_CONTROL_PORT,LCD_RS
-	BSF     LCD_CONTROL_PORT,LCD_R_W
+;;*******************************************************************
+;;LCD_READ_DATA
+;;This routine will read 8 bits of data from the LCD.
+;;
+;LCD_READ_DATA
+;	CALL    LCD_BUSY_CHECK
+;
+;					;For a data read, RS and R/W should be high
+;	BSF     LCD_CONTROL_PORT,LCD_RS
+;	BSF     LCD_CONTROL_PORT,LCD_R_W
+;*******************************************************************
+; LCD_READ
+;
+; Reads data from the LCD, returned in W.
+;
+; Registers used:
+;	this: W (value returned from LCD_TOGGLE_E)
+;
 LCD_READ
-	BSF     STATUS, RP0		;Select Register page 1
-	MOVF    LCD_DATA_TRIS,W		;Get the current setting for the whole register
-	IORLW   LCD_DATA_MASK		;Set the TRIS bits- make all of the data
-	MOVWF   LCD_DATA_TRIS		;   lines inputs.
-	BCF     STATUS, RP0		;Select Register page 0
+	banksel	LCD_DATA_TRIS
+	movlw	LCD_DATA_MASK		; Set the TRIS bits - make all of the data
+	movwf	LCD_DATA_TRIS		; lines inputs.
 
-	CALL    LCD_TOGGLE_E		;Toggle E and read upper nibble
-	MOVWF   _mr_lcd_temp		;Save the upper nibble
+	call	LCD_TOGGLE_E		; Toggle E
 
-	BSF     STATUS, RP0		;Select Register page 1
+	banksel	LCD_DATA_TRIS		; Return the data lines to outputs
+	movlw	0
+	movwf	LCD_DATA_TRIS
 
-	MOVLW   0
-	ANDWF   LCD_DATA_TRIS,F		;   lines outputs.
-
-	BCF     STATUS, RP0		;Select Register page 0
-	MOVF    _mr_lcd_temp,W
-
-	RETURN
+	return
 
 ;*******************************************************************
-;LCD_BUSY_CHECK
-;This routine checks the busy flag, returns when not busy
-
+; LCD_BUSY_CHECK
+;
+; This routine checks the busy flag, returns when not busy
+;
+; Registers used:
+;	this: W (flag check, and number of times to loop in LCD_A_DELAY)
+;	LCD_READ: W (value read from LCD)
+;	LCD_A_DELAY: _mr_lcd_delayloop1
+;	LCD_A_DELAY: _mr_lcd_delayloop2
+;
 LCD_BUSY_CHECK
+	banksel	LCD_CONTROL_PORT
 
-   ;For a busy check, RS is low and R/W is high
-        BCF     LCD_CONTROL_PORT,LCD_RS
-        BSF     LCD_CONTROL_PORT,LCD_R_W
+	;For a busy check, RS is low and R/W is high
+	bcf	LCD_CONTROL_PORT, LCD_RS
+	bsf	LCD_CONTROL_PORT, LCD_R_W
 
-        CALL    LCD_READ
-        ANDLW   0x80                    ;Check busy flag, high = busy
+	call	LCD_READ
+	andlw	0x80					; Check busy flag, high = busy
 
-        SKPNZ
-		RETURN
-        MOVLW   5
-        CALL    LCD_A_DELAY
-        GOTO    LCD_BUSY_CHECK          ;If busy, check again
+	skpnz
+		return
+	movlw	5
+	call	LCD_A_DELAY
+	goto	LCD_BUSY_CHECK				; If busy, check again
 
 ;*******************************************************************
-;LCD_CLEAR_SCREEN
+; LCD_CLEAR_SCREEN
+;
+; Clears the entire LCD screen
+;
+; Registers used:
+;	this: W (number of characters to clear)
+;	LCD_WRITE_CMD: W (command to write to lcd)
+;	LCD_WRITE_CMD: _mr_lcd_temp (temporarily store command)
+;	LCD_WRITE_CMD: _mr_lcd_delayloop1
+;	LCD_WRITE_CMD: _mr_lcd_delayloop2
+;	LCD_WRITE_DATA: W (character to write to lcd)
+;	LCD_WRITE_DATA: _mr_lcd_temp (temporarily store character)
+;	LCD_WRITE_DATA: _mr_lcd_delayloop1
+;	LCD_WRITE_DATA: _mr_lcd_delayloop2
+;
 LCD_CLEAR_SCREEN
-	MOVLW   LCD_CMD_SET_DDRAM | SCR_ROW0 | SCR_COL0
-	CALL    LCD_WRITE_CMD
-	MOVLW	0x14
-	MOVWF	_mr_lcd_clear_chars
-	CALL	LCD_CLEAR_CHARS
+	; Clear the display memory. This command also moves the cursor to the home position
+	movlw	LCD_CMD_CLEAR_DISPLAY
+	call	LCD_WRITE_CMD
 
-        MOVLW   LCD_CMD_SET_DDRAM | SCR_ROW1 | SCR_COL0
-	CALL    LCD_WRITE_CMD
-	MOVLW	0x14
-	MOVWF	_mr_lcd_clear_chars
-	CALL	LCD_CLEAR_CHARS
+;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW0 | SCR_COL0
+;	call	LCD_WRITE_CMD
+;	movlw	0x14
+;	call	LCD_CLEAR_CHARS
+;
+;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW1 | SCR_COL0
+;	call	LCD_WRITE_CMD
+;	movlw	0x14
+;	call	LCD_CLEAR_CHARS
+;
+;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW2 | SCR_COL0
+;	call	LCD_WRITE_CMD
+;	movlw	0x14
+;	call	LCD_CLEAR_CHARS
+;
+;	movlw	LCD_CMD_SET_DDRAM | SCR_ROW3 | SCR_COL0
+;	call	LCD_WRITE_CMD
+;	movlw	0x14
+;	call	LCD_CLEAR_CHARS
 
-        MOVLW   LCD_CMD_SET_DDRAM | SCR_ROW2 | SCR_COL0
-	CALL    LCD_WRITE_CMD
-	MOVLW	0x14
-	MOVWF	_mr_lcd_clear_chars
-	CALL	LCD_CLEAR_CHARS
-
-        MOVLW   LCD_CMD_SET_DDRAM | SCR_ROW3 | SCR_COL0
-	CALL    LCD_WRITE_CMD
-	MOVLW	0x14
-	MOVWF	_mr_lcd_clear_chars
-	CALL	LCD_CLEAR_CHARS
-
-	RETURN
+	return
 
 ;*******************************************************************
-; LCD_CLEAR_CHARS - Writes a number (_mr_lcd_clear_chars) of ASCII spaces to the LCD
+; LCD_CLEAR_CHARS
+;
+; Writes a number (W) of ASCII spaces to the LCD
+;
+; Registers used:
+;	this: W (number of characters to clear, also holds ASCII space)
+;	this: _mr_lcd_loop (number of characters to clear)
+;	LCD_WRITE_DATA: W (character to write to lcd)
+;	LCD_WRITE_DATA: _mr_lcd_temp (temporarily store character)
+;	LCD_WRITE_DATA: _mr_lcd_delayloop1
+;	LCD_WRITE_DATA: _mr_lcd_delayloop2
+;
 LCD_CLEAR_CHARS
-	MOVLW   0x20                    ;ASCII space
-	CALL    LCD_WRITE_DATA
-	DECFSZ	_mr_lcd_clear_chars, F
-		goto  LCD_CLEAR_CHARS
-	RETURN
+	banksel	_mr_lcd_loop
+	movwf	_mr_lcd_loop
+	movlw	0x20				; ASCII space
+LCD_CLEAR_CHARS_LOOP
+	call	LCD_WRITE_DATA
+	banksel _mr_lcd_loop
+	decfsz	_mr_lcd_loop, F
+		goto	LCD_CLEAR_CHARS_LOOP
+	return
