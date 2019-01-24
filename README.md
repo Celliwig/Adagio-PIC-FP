@@ -26,6 +26,20 @@ Another of the available timers is used to generate an interrupt to sample RB4. 
 ### LCD + Buttons
 Because the buttons and the LCD share data lines (RD0-7) it was decided to handle button scanning and LCD updates within the main loop, thereby guaranteeing mutual exclusion. These could have been seperated but the mutexs required would have overly complicated the code for little gain.
 
+### RPi signals
+One source of conflict is that the panel is running at 5 volts, while the RPi runs (interface wise) at 3.3 volts. Accidentally applying 5 volts to the RPi could be terminal. However the 2 signals that are inputs to the RPi, reset and shutdown init, are (or can be configured) active low. So the solution is to configure those pins as inputs in their inactive state (high impedance), then switching them to outputs having already configured their state to being low when needed. The other signal, shutdown confirmed, is fed as is to PIC external interrupt, being just within range for the PI to detect.
+
+# Test Mode
+To help testing of both the firmware and hardware interface to the RPi a test mode was created, it can be accessed by holding down play while pressing power. Available tests are:
+ - Button - Test front panel buttons.
+ - LCD - Simple test of the LCD display.
+ - IR - Shows the address and data (with corresponding FP command) from a remote (if it's compatible).
+ - Power - Allows the toggling of RPi reset, RPi shutdown init, PSU enable.
+ - i2c Master - Increment/decrement brightness/contrast of the lcd.
+ - i2c Slave - Shows data sent from the RPi.
+ 
+ N.B. While implementing a firmware that was fully programmable in regard to translating IR commands to the equivalent FP commands was deemed impractical, the IR remote address is stored in the EEPROM and can be easily reprogrammed while in the IR test mode by simply registering a valid command from the remote (the received address will update) and then pressing eject.
+ 
 # Pic pin assignment
 ### LCD
 | Function | LCD Pin | PIC Pin |
