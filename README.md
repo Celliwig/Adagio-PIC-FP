@@ -2,10 +2,10 @@
 PIC code for Adagio front panel.
 
 # Overview
-This project was created as I had a Crestron Adagio AAS-2 Audio Server with a broken motherboard, and the idea was born to replace the broken motherboard with a Raspberry Pi. After a little investigation it was clear that the panel was based around a PIC 16F874, further more the SSP I2C port of the PIC is connected to the front panel IDC header making connection to the Pi easy. It was consider using the existing firmware, however that would require reverse engineering it, which would be costly time wise without any guarantee of a pratical solution at the end (potential problems include the character data transfer interface, IR receiver protocol and matching it to a new remote, and power control which doesn't exist in the original configuration). 
+This project was created as I had a Crestron Adagio AAS-2 Audio Server with a broken motherboard, and the idea was born to replace the broken motherboard with a Raspberry Pi. After a little investigation it was clear that the panel was based around a PIC 16F874, further more the SSP i2c port of the PIC is connected to the front panel IDC header making connection to the Pi easy. It was consider using the existing firmware, however that would require reverse engineering it, which would be costly time wise without any guarantee of a pratical solution at the end (potential problems include the character data transfer interface, IR receiver protocol and matching it to a new remote, and power control which doesn't exist in the original configuration). 
 
 # Hardware
-The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 bytes of EEPROM storage and 192 bytes of RAM. A standard character LCD (Hitatchi 44780 clone) and 18 buttons provide the user interface, with the addition of an IR receiver (38 khz carrier) for remote support. A dual potentiometer (DS1845) provides programmatic control of the LCD brightness and contrast over an I2C interface. Interfacing is provided by a 40 pin IDC header (PL1), see docs/Adagio Front Panel.ods for the pinout. A 6 pin crimp style connector (PL2) provides power to board, and this also doubles as an ISP (in system programming) interface.
+The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 bytes of EEPROM storage and 192 bytes of RAM. A standard character LCD (Hitatchi 44780 clone) and 18 buttons provide the user interface, with the addition of an IR receiver (38 khz carrier) for remote support. A dual potentiometer (DS1845) provides programmatic control of the LCD brightness and contrast over an i2c interface. Interfacing is provided by a 40 pin IDC header (PL1), see docs/Adagio Front Panel.ods for the pinout. A 6 pin crimp style connector (PL2) provides power to board, and this also doubles as an ISP (in system programming) interface.
 
 # Firmware design
 The new firmware must give full access to all of the exising hardware, and in addition implement 'power' control. This requires implementation of power on/off states, and additional interfacing to RPi. The various signals are:
@@ -13,6 +13,18 @@ The new firmware must give full access to all of the exising hardware, and in ad
  - RPi initiate shutdown (RPi GPIO pin - see RPi overlay gpio-shutdown)
  - RPi shutdown confirmed (RPi GPIO pin - see RPi overlay gpio-poweroff)
  - PSU enable
+ 
+### I2C
+The main interface to the RPi is through the i2c interface, however the situation is complicated by the fact that the PIC also has to control the LCD brightness/contrast when switching between power on and off states. This requires that the PIC be either the master or a slave in the appropriate mode. One advantage of the 16F874 is that one of the available periphals is an i2c module, which reduces the complexity of the required code.
+
+### Screen
+To reduce the amout of time the PIC spends servicing an i2c command from the RPi (writing to the screen requires wasting time waiting for the data values to become valid) a screen buffer was implemented. One of the onboard timer modules is then used to generate a periodic interrupt to set a flag to cause a screen update.
+
+### IR
+Another of the available timers is used to generate an interrupt to sample RB4. This is processed looking for a valid (according to the NEC protocol) command.
+
+### LCD + Buttons
+Because the buttons and the LCD share data lines (RD0-7) it was decided to handle button scanning and LCD updates within the main loop, thereby guaranteeing mutual exclusion. These could have been seperated but the mutexs required would have overly complicated the code for little gain.
 
 # Pic pin assignment
 ### LCD
