@@ -35,3 +35,10 @@ Part of the button matrix is shared with the lcd data lines (RD0-7). RB1, RB2, a
 |   RD5   |   Stop   |    -     |   Down   |
 |   RD6   | Display1 |    -     |  Select  |
 |   RD7   |   Eject  |    -     |   Pause  |
+
+# LEDs
+ - RE2 = Power
+ - RC1 = Online
+ 
+# IR receiver
+ - RB4
