@@ -7,6 +7,12 @@ This project was created as I had a Crestron Adagio AAS-2 Audio Server with a br
 # Hardware
 The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 bytes of EEPROM storage and 192 bytes of RAM. A standard character LCD (Hitatchi 44780 clone) and 18 buttons provide the user interface, with the addition of an IR receiver (38 khz carrier) for remote support. A dual potentiometer (DS1845) provides programmatic control of the LCD brightness and contrast over an I2C interface. Interfacing is provided by a 40 pin IDC header (PL1), see docs/Adagio Front Panel.ods for the pinout. A 6 pin crimp style connector (PL2) provides power to board, and this also doubles as an ISP (in system programming) interface.
 
+# Firmware design
+The new firmware must give full access to all of the exising hardware, and in addition implement 'power' control. This requires implementation of power on/off states, and additional interfacing to RPi. The various signals are:
+ - RPi reset (RPi RUN pin)
+ - RPi initiate shutdown (RPi GPIO pin - see RPi overlay gpio-shutdown)
+ - RPi shutdown confirmed (RPi GPIO pin - see RPi overlay gpio-poweroff)
+ - PSU enable
 
 # Pic pin assignment
 ### LCD
@@ -42,7 +48,9 @@ Part of the button matrix is shared with the lcd data lines (RD0-7). RB1, RB2, a
  - RE2 = Power
  - RC1 = Online
  
-### IR receiver
- - RB4
- 
- 
+### Additional
+ - RB4 = IR receiver
+ - RA5 = RPi reset
+ - RB7 = RPi Shutdown Init
+ - RB0 = RPi Shutdown Confirmed
+ - RC0 = PSU Enable
