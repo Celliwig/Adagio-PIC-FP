@@ -5,9 +5,11 @@ PIC code for Adagio front panel.
 This project was created as I had a Crestron Adagio AAS-2 Audio Server with a broken motherboard, and the idea was born to replace the broken motherboard with a Raspberry Pi. After a little investigation it was clear that the panel was based around a PIC 16F874, further more the SSP I2C port of the PIC is connected to the front panel IDC header making connection to the Pi easy. It was consider using the existing firmware, however that would require reverse engineering it, which would be costly time wise without any guarantee of a pratical solution at the end (potential problems include the character data transfer interface, IR receiver protocol and matching it to a new remote, and power control which doesn't exist in the original configuration). 
 
 # Hardware
-The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 bytes of EEPROM storage and 192 bytes of RAM. A standard character LCD (Hitatchi 44780 clone) and 18 buttons provide the user interface, with the addition of an IR receiver (38 khz carrier) for remote support. A dual potentiometer (DS1845) provides programmatic control of the LCD brightness and contrast over an I2C interface. Interfacing is provided by a 40 pin IDC header, see docs/Adagio Front Panel.ods for the pinout. A crimp connector provides power 
+The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 bytes of EEPROM storage and 192 bytes of RAM. A standard character LCD (Hitatchi 44780 clone) and 18 buttons provide the user interface, with the addition of an IR receiver (38 khz carrier) for remote support. A dual potentiometer (DS1845) provides programmatic control of the LCD brightness and contrast over an I2C interface. Interfacing is provided by a 40 pin IDC header (PL1), see docs/Adagio Front Panel.ods for the pinout. A 6 pin crimp style connector (PL2) provides power to board, and this also doubles as an ISP (in system programming) interface.
 
-## LCD
+
+# Pic pin assignment
+### LCD
 | Function | LCD Pin | PIC Pin |
 | --------:| -------:| -------:|
 |    DB7   |     3   |   RD7   |
@@ -22,7 +24,7 @@ The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 
 |    R/W   |    12   |   RC6   |
 |    RS    |    13   |   RC5   |
 
-## Buttons
+### Buttons
 Part of the button matrix is shared with the lcd data lines (RD0-7). RB1, RB2, and RC2 are used to select the different button banks.
 
 | Pic Pin |   RB1    |   RB2    |   RC2    |
@@ -36,9 +38,11 @@ Part of the button matrix is shared with the lcd data lines (RD0-7). RB1, RB2, a
 |   RD6   | Display1 |    -     |  Select  |
 |   RD7   |   Eject  |    -     |   Pause  |
 
-# LEDs
+### LEDs
  - RE2 = Power
  - RC1 = Online
  
-# IR receiver
+### IR receiver
  - RB4
+ 
+ 
