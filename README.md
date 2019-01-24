@@ -8,3 +8,16 @@ This project was created as I had a Crestron Adagio AAS-2 Audio Server with a br
 The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 bytes of EEPROM storage and 192 bytes of RAM. A standard character LCD (Hitatchi 44780 clone) and 18 buttons provide the user interface, with the addition of an IR receiver (38 khz carrier) for remote support. A dual potentiometer (DS1845) provides programmatic control of the LCD brightness and contrast over an I2C interface.
 
 ## LCD
+| Function | LCD Pin | PIC Pin |
+| --------:| -------:| -------:|
+|    DB7   |     3   |   RD7   |
+|    DB6   |     4   |   RD6   |
+|    DB5   |     5   |   RD5   |
+|    DB4   |     6   |   RD4   |
+|    DB3   |     7   |   RD3   |
+|    DB2   |     8   |   RD2   |
+|    DB1   |     9   |   RD1   |
+|    DB0   |    10   |   RD0   |
+|  Enable  |    11   |   RC7   |
+|    R/W   |    12   |   RC6   |
+|    RS    |    13   |   RC5   |
