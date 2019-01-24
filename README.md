@@ -21,3 +21,17 @@ The front panel is designed around a PIC 16F1874 which has 4K of flash rom, 128 
 |  Enable  |    11   |   RC7   |
 |    R/W   |    12   |   RC6   |
 |    RS    |    13   |   RC5   |
+
+## Buttons
+Part of the button matrix is shared with the lcd data lines (RD0-7). RB1, RB2, and RC2 are used to select the different button banks.
+
+| Pic Pin |   RB1    |   RB2    |   RC2    |
+| -------:| --------:| --------:| --------:|
+|   RD0   | Previous |    Up    |   Power  |
+|   RD1   | Display4 |  Right   |   Play   |
+|   RD2   | Display3 |    -     |   Left   |
+|   RD3   |   Mode   |    -     |   CD/HD  |
+|   RD4   |   Next   |    -     | Display2 |
+|   RD5   |   Stop   |    -     |   Down   |
+|   RD6   | Display1 |    -     |  Select  |
+|   RD7   |   Eject  |    -     |   Pause  |
